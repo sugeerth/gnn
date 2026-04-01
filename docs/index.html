@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GNN Social Network Analysis — Representation Learning</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --bg2: #12121a;
+            --bg3: #1a1a2e;
+            --surface: #16161f;
+            --border: #2a2a3e;
+            --text: #e8e8f0;
+            --text2: #a0a0b8;
+            --accent: #6366f1;
+            --accent2: #818cf8;
+            --green: #34d399;
+            --red: #f87171;
+            --yellow: #fbbf24;
+            --pink: #f472b6;
+            --cyan: #22d3ee;
+            --orange: #fb923c;
+            --purple: #a78bfa;
+            --class0: #6366f1;
+            --class1: #34d399;
+            --class2: #f87171;
+            --class3: #fbbf24;
+            --class4: #22d3ee;
+            --class5: #f472b6;
+            --class6: #fb923c;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 50%, rgba(99,102,241,0.08) 0%, transparent 50%),
+                        radial-gradient(circle at 70% 50%, rgba(52,211,153,0.06) 0%, transparent 50%);
+            animation: pulse 8s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1) rotate(0deg); }
+            50% { transform: scale(1.05) rotate(2deg); }
+        }
+        .hero-content { position: relative; z-index: 1; max-width: 900px; }
+        .hero h1 {
+            font-size: clamp(2.5rem, 6vw, 4.5rem);
+            font-weight: 900;
+            letter-spacing: -0.03em;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+            background: linear-gradient(135deg, #6366f1, #34d399, #22d3ee);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .hero p {
+            font-size: 1.25rem;
+            color: var(--text2);
+            max-width: 700px;
+            margin: 0 auto 2rem;
+        }
+        .hero-stats {
+            display: flex;
+            gap: 2rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 2rem;
+        }
+        .hero-stat {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem 2rem;
+            min-width: 160px;
+        }
+        .hero-stat .value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .hero-stat .label {
+            font-size: 0.85rem;
+            color: var(--text2);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .scroll-indicator {
+            position: absolute;
+            bottom: 2rem;
+            animation: bounce 2s infinite;
+            color: var(--text2);
+            font-size: 1.5rem;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(10px); }
+        }
+        nav {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(10,10,15,0.9);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0.75rem 2rem;
+            display: flex;
+            gap: 1.5rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        nav a {
+            color: var(--text2);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        nav a:hover, nav a.active {
+            color: var(--accent2);
+            background: rgba(99,102,241,0.1);
+        }
+        section {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 4rem 2rem;
+        }
+        h2 {
+            font-size: 2rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
+        }
+        .section-subtitle {
+            color: var(--text2);
+            margin-bottom: 2.5rem;
+            font-size: 1.1rem;
+        }
+        .grid { display: grid; gap: 1.5rem; }
+        .grid-2 { grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); }
+        .grid-3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+        .grid-4 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: all 0.3s;
+        }
+        .card:hover {
+            border-color: var(--accent);
+            box-shadow: 0 0 30px rgba(99,102,241,0.1);
+            transform: translateY(-2px);
+        }
+        .card h3 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+        .metric-card {
+            text-align: center;
+            padding: 2rem;
+        }
+        .metric-card .big-num {
+            font-size: 3rem;
+            font-weight: 900;
+            font-family: 'JetBrains Mono', monospace;
+            line-height: 1;
+        }
+        .metric-card .metric-label {
+            color: var(--text2);
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .metric-card .metric-sub {
+            color: var(--text2);
+            font-size: 0.8rem;
+            margin-top: 0.3rem;
+        }
+        .model-card { position: relative; overflow: hidden; }
+        .model-card .model-badge {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-best { background: rgba(52,211,153,0.15); color: var(--green); }
+        .badge-good { background: rgba(99,102,241,0.15); color: var(--accent2); }
+        .model-acc {
+            font-size: 3.5rem;
+            font-weight: 900;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .model-detail {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+        .model-detail:last-child { border-bottom: none; }
+        .model-detail .label { color: var(--text2); }
+        .chart-container {
+            position: relative;
+            height: 350px;
+            width: 100%;
+        }
+        .viz-container {
+            width: 100%;
+            height: 600px;
+            border-radius: 16px;
+            overflow: hidden;
+            position: relative;
+            background: var(--bg2);
+        }
+        .viz-controls {
+            display: flex;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .viz-btn {
+            padding: 0.5rem 1.25rem;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            font-family: 'Inter', sans-serif;
+        }
+        .viz-btn:hover { border-color: var(--accent); }
+        .viz-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
+        .legend {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-top: 1rem;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text2);
+        }
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        .comparison-table th, .comparison-table td {
+            padding: 1rem 1.25rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        .comparison-table th {
+            color: var(--text2);
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+        .comparison-table tr:hover td { background: rgba(99,102,241,0.03); }
+        .bar-inline {
+            height: 8px;
+            border-radius: 4px;
+            background: var(--border);
+            position: relative;
+            margin-top: 0.5rem;
+        }
+        .bar-inline .fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 1s ease;
+        }
+        .insight-box {
+            background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(52,211,153,0.05));
+            border: 1px solid rgba(99,102,241,0.2);
+            border-radius: 16px;
+            padding: 2rem;
+            margin: 2rem 0;
+        }
+        .insight-box h3 { color: var(--accent2); margin-bottom: 0.75rem; }
+        .insight-box ul { padding-left: 1.5rem; }
+        .insight-box li { margin-bottom: 0.5rem; color: var(--text2); }
+        .cm-cell {
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-family: 'JetBrains Mono', monospace;
+            border-radius: 6px;
+        }
+        .cm-grid {
+            display: inline-grid;
+            gap: 3px;
+        }
+        .tooltip-custom {
+            position: absolute;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0.75rem 1rem;
+            font-size: 0.8rem;
+            pointer-events: none;
+            z-index: 50;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+        }
+        footer {
+            text-align: center;
+            padding: 3rem 2rem;
+            color: var(--text2);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border);
+        }
+        footer a { color: var(--accent2); text-decoration: none; }
+        @media (max-width: 768px) {
+            .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+            .hero-stats { flex-direction: column; align-items: center; }
+            section { padding: 2rem 1rem; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero" id="top">
+    <div class="hero-content">
+        <h1>Graph Neural Networks<br>Uncover Hidden Structure</h1>
+        <p>How GNNs learn powerful representations from network topology — turning raw citation links into rich, meaningful embeddings that reveal community structure invisible to traditional methods.</p>
+        <div class="hero-stats" id="hero-stats"></div>
+    </div>
+    <div class="scroll-indicator">&#x25BC;</div>
+</div>
+
+<!-- NAV -->
+<nav id="main-nav">
+    <a href="#network">Network</a>
+    <a href="#models">Models</a>
+    <a href="#embeddings">Embeddings</a>
+    <a href="#training">Training</a>
+    <a href="#communities">Communities</a>
+    <a href="#analysis">Analysis</a>
+    <a href="#insights">Key Insights</a>
+</nav>
+
+<!-- NETWORK OVERVIEW -->
+<section id="network">
+    <h2>The Network</h2>
+    <p class="section-subtitle" id="network-desc"></p>
+    <div class="grid grid-4" id="network-stats"></div>
+    <div class="card" style="margin-top: 2rem;">
+        <h3>Class Distribution</h3>
+        <div class="chart-container"><canvas id="chart-class-dist"></canvas></div>
+    </div>
+    <div class="grid grid-2" style="margin-top: 1.5rem;">
+        <div class="card">
+            <h3>Degree Distribution</h3>
+            <div class="chart-container"><canvas id="chart-degree"></canvas></div>
+        </div>
+        <div class="card">
+            <h3>Neighborhood Label Consistency by Class</h3>
+            <div class="chart-container"><canvas id="chart-consistency"></canvas></div>
+        </div>
+    </div>
+</section>
+
+<!-- MODEL COMPARISON -->
+<section id="models">
+    <h2>Model Showdown</h2>
+    <p class="section-subtitle">Three GNN architectures compete — each brings a different inductive bias to learning node representations.</p>
+    <div class="grid grid-3" id="model-cards"></div>
+    <div class="card" style="margin-top: 2rem; overflow-x: auto;">
+        <h3>Detailed Comparison</h3>
+        <table class="comparison-table" id="comparison-table">
+            <thead><tr>
+                <th>Metric</th><th>GCN</th><th>GAT</th><th>GraphSAGE</th>
+            </tr></thead>
+            <tbody id="comparison-body"></tbody>
+        </table>
+    </div>
+</section>
+
+<!-- EMBEDDINGS VISUALIZATION -->
+<section id="embeddings">
+    <h2>Embedding Space</h2>
+    <p class="section-subtitle">Watch how GNN-learned representations separate communities compared to raw features. Toggle between models to see the difference.</p>
+    <div class="viz-controls" id="tsne-controls"></div>
+    <div class="card" style="padding: 0; overflow: hidden;">
+        <div class="viz-container" id="tsne-viz"></div>
+    </div>
+    <div class="legend" id="tsne-legend"></div>
+    <div class="insight-box">
+        <h3>Why This Matters</h3>
+        <ul>
+            <li><strong>Raw features</strong> show overlapping, noisy clusters — the bag-of-words vectors don't capture relational information.</li>
+            <li><strong>GNN embeddings</strong> form tight, well-separated clusters because they aggregate neighborhood information through message passing.</li>
+            <li>The <strong>NMI improvement from 0.13 → 0.59</strong> shows GNNs extract 4.5x more community signal than features alone.</li>
+        </ul>
+    </div>
+</section>
+
+<!-- TRAINING CURVES -->
+<section id="training">
+    <h2>Training Dynamics</h2>
+    <p class="section-subtitle">Loss curves, accuracy trajectories, and convergence behavior across architectures.</p>
+    <div class="grid grid-2">
+        <div class="card">
+            <h3>Training Loss</h3>
+            <div class="chart-container"><canvas id="chart-loss"></canvas></div>
+        </div>
+        <div class="card">
+            <h3>Validation Accuracy</h3>
+            <div class="chart-container"><canvas id="chart-val-acc"></canvas></div>
+        </div>
+    </div>
+    <div class="grid grid-2" style="margin-top: 1.5rem;">
+        <div class="card">
+            <h3>Validation Macro F1</h3>
+            <div class="chart-container"><canvas id="chart-val-f1"></canvas></div>
+        </div>
+        <div class="card">
+            <h3>Train vs Validation Accuracy</h3>
+            <div class="chart-container"><canvas id="chart-overfit"></canvas></div>
+        </div>
+    </div>
+</section>
+
+<!-- COMMUNITY DETECTION -->
+<section id="communities">
+    <h2>Community Detection</h2>
+    <p class="section-subtitle">GNN embeddings vs. traditional Louvain — who finds better communities?</p>
+    <div class="grid grid-4" id="cluster-cards"></div>
+    <div class="card" style="margin-top: 2rem;">
+        <h3>Clustering Quality (NMI vs Ground Truth)</h3>
+        <div class="chart-container"><canvas id="chart-nmi"></canvas></div>
+    </div>
+</section>
+
+<!-- INTERACTIVE GRAPH -->
+<section id="analysis">
+    <h2>Interactive Network</h2>
+    <p class="section-subtitle">Explore the network — hover over nodes to see their connections and properties. Force-directed layout reveals natural community structure.</p>
+    <div class="card" style="padding: 0; overflow: hidden;">
+        <div class="viz-container" id="graph-viz" style="height: 700px;"></div>
+    </div>
+    <div class="legend" id="graph-legend"></div>
+</section>
+
+<!-- CONFUSION MATRICES -->
+<section id="confusion">
+    <h2>Per-Class Performance</h2>
+    <p class="section-subtitle">How well does each model distinguish between research areas?</p>
+    <div class="grid grid-3" id="cm-section"></div>
+</section>
+
+<!-- KEY INSIGHTS -->
+<section id="insights">
+    <h2>Key Insights</h2>
+    <p class="section-subtitle">What we learned about GNNs and representation learning on social networks.</p>
+    <div id="insights-content"></div>
+</section>
+
+<footer>
+    <p>Built with PyTorch Geometric, D3.js, and Chart.js</p>
+    <p style="margin-top: 0.5rem;"><a href="https://github.com/sugeerth/gnn" target="_blank">View on GitHub</a> &middot; <a href="https://colab.research.google.com/github/sugeerth/gnn/blob/main/GNN_Social_Network_Analysis.ipynb" target="_blank">Open in Colab</a></p>
+</footer>
+
+<script>
+// =====================================================================
+// LOAD DATA AND RENDER
+// =====================================================================
+const CLASS_COLORS = ['#6366f1','#34d399','#f87171','#fbbf24','#22d3ee','#f472b6','#fb923c'];
+const MODEL_COLORS = { 'GCN': '#6366f1', 'GAT': '#34d399', 'GraphSAGE': '#22d3ee', 'Raw Features': '#666' };
+
+Chart.defaults.color = '#a0a0b8';
+Chart.defaults.borderColor = '#2a2a3e';
+Chart.defaults.font.family = "'Inter', sans-serif";
+
+fetch('results.json').then(r => r.json()).then(D => {
+    renderHero(D);
+    renderNetworkStats(D);
+    renderClassDist(D);
+    renderDegree(D);
+    renderConsistency(D);
+    renderModels(D);
+    renderTSNE(D);
+    renderTraining(D);
+    renderClusters(D);
+    renderGraph(D);
+    renderConfusion(D);
+    renderInsights(D);
+});
+
+// --- HERO ---
+function renderHero(D) {
+    const s = D.graph_stats;
+    const best = D.models[D.best_model];
+    const html = [
+        { value: s.num_nodes.toLocaleString(), label: 'Nodes' },
+        { value: s.num_edges.toLocaleString(), label: 'Edges' },
+        { value: (best.test.accuracy * 100).toFixed(1) + '%', label: `${D.best_model} Accuracy` },
+        { value: s.homophily.toFixed(2), label: 'Homophily' },
+    ].map(h => `<div class="hero-stat"><div class="value">${h.value}</div><div class="label">${h.label}</div></div>`).join('');
+    document.getElementById('hero-stats').innerHTML = html;
+}
+
+// --- NETWORK STATS ---
+function renderNetworkStats(D) {
+    const s = D.graph_stats;
+    document.getElementById('network-desc').textContent = D.description;
+    const stats = [
+        { value: s.num_nodes.toLocaleString(), label: 'Nodes', sub: 'Scientific papers' },
+        { value: s.num_edges.toLocaleString(), label: 'Edges', sub: 'Citation links' },
+        { value: s.avg_degree, label: 'Avg Degree', sub: `Max: ${s.max_degree}` },
+        { value: s.density, label: 'Density', sub: `${s.num_components} component(s)` },
+        { value: s.homophily, label: 'Homophily', sub: 'Same-class edge ratio' },
+        { value: s.avg_neighbor_consistency, label: 'Neighbor Consistency', sub: 'Avg same-label neighbors' },
+        { value: D.class_names.length, label: 'Classes', sub: 'Research areas' },
+        { value: s.louvain_communities, label: 'Louvain Communities', sub: `NMI: ${s.louvain_nmi}` },
+    ];
+    document.getElementById('network-stats').innerHTML = stats.map(s =>
+        `<div class="card metric-card"><div class="big-num">${s.value}</div><div class="metric-label">${s.label}</div><div class="metric-sub">${s.sub}</div></div>`
+    ).join('');
+}
+
+// --- CLASS DISTRIBUTION ---
+function renderClassDist(D) {
+    const dist = D.graph_stats.class_distribution;
+    new Chart(document.getElementById('chart-class-dist'), {
+        type: 'bar',
+        data: {
+            labels: Object.keys(dist),
+            datasets: [{
+                data: Object.values(dist),
+                backgroundColor: CLASS_COLORS,
+                borderRadius: 8,
+                borderSkipped: false,
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, grid: { color: '#1a1a2e' } }, x: { grid: { display: false } } }
+        }
+    });
+}
+
+// --- DEGREE DISTRIBUTION ---
+function renderDegree(D) {
+    const h = D.graph_stats.degree_hist;
+    const labels = h.bin_edges.slice(0, -1).map((b, i) => Math.round((b + h.bin_edges[i+1])/2));
+    new Chart(document.getElementById('chart-degree'), {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: h.counts,
+                backgroundColor: 'rgba(99,102,241,0.6)',
+                borderRadius: 4,
+                borderSkipped: false,
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, title: { display: true, text: 'Count' }, grid: { color: '#1a1a2e' } },
+                x: { title: { display: true, text: 'Degree' }, grid: { display: false },
+                     ticks: { maxTicksLimit: 15 } }
+            }
+        }
+    });
+}
+
+// --- NEIGHBORHOOD CONSISTENCY ---
+function renderConsistency(D) {
+    const cons = D.graph_stats.class_neighbor_consistency;
+    new Chart(document.getElementById('chart-consistency'), {
+        type: 'bar',
+        data: {
+            labels: Object.keys(cons),
+            datasets: [{
+                data: Object.values(cons),
+                backgroundColor: CLASS_COLORS,
+                borderRadius: 8,
+                borderSkipped: false,
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, max: 1, title: { display: true, text: 'Consistency' }, grid: { color: '#1a1a2e' } },
+                x: { grid: { display: false }, ticks: { font: { size: 10 } } }
+            }
+        }
+    });
+}
+
+// --- MODEL CARDS ---
+function renderModels(D) {
+    const names = ['GCN', 'GAT', 'GraphSAGE'];
+    const bestAcc = Math.max(...names.map(n => D.models[n].test.accuracy));
+    document.getElementById('model-cards').innerHTML = names.map(name => {
+        const m = D.models[name];
+        const isBest = m.test.accuracy === bestAcc;
+        const color = MODEL_COLORS[name];
+        return `<div class="card model-card">
+            <div class="model-badge ${isBest ? 'badge-best' : 'badge-good'}">${isBest ? 'BEST' : ''}</div>
+            <h3 style="color:${color}">${name}</h3>
+            <div class="model-acc" style="color:${color}">${(m.test.accuracy*100).toFixed(1)}%</div>
+            <div style="color:var(--text2);margin-bottom:1rem;">Test Accuracy</div>
+            <div class="model-detail"><span class="label">Macro F1</span><span>${(m.test.f1_macro*100).toFixed(1)}%</span></div>
+            <div class="model-detail"><span class="label">Parameters</span><span>${m.params.toLocaleString()}</span></div>
+            <div class="model-detail"><span class="label">Training Time</span><span>${m.training_time}s</span></div>
+            <div class="model-detail"><span class="label">Cluster NMI</span><span>${D.cluster_analysis[name].nmi}</span></div>
+            <div class="model-detail"><span class="label">Silhouette</span><span>${D.cluster_analysis[name].silhouette}</span></div>
+        </div>`;
+    }).join('');
+
+    // Comparison table
+    const metrics = [
+        ['Test Accuracy', n => (D.models[n].test.accuracy*100).toFixed(1)+'%'],
+        ['Macro F1', n => (D.models[n].test.f1_macro*100).toFixed(1)+'%'],
+        ['NMI', n => D.cluster_analysis[n].nmi],
+        ['Silhouette', n => D.cluster_analysis[n].silhouette],
+        ['Parameters', n => D.models[n].params.toLocaleString()],
+        ['Training Time', n => D.models[n].training_time + 's'],
+    ];
+    document.getElementById('comparison-body').innerHTML = metrics.map(([label, fn]) =>
+        `<tr><td><strong>${label}</strong></td>${names.map(n => `<td>${fn(n)}</td>`).join('')}</tr>`
+    ).join('');
+}
+
+// --- t-SNE VISUALIZATION ---
+function renderTSNE(D) {
+    const allModels = ['Raw Features', 'GCN', 'GAT', 'GraphSAGE'];
+    const container = document.getElementById('tsne-controls');
+    container.innerHTML = allModels.map((m, i) =>
+        `<button class="viz-btn ${i===0?'active':''}" onclick="switchTSNE('${m}', this)">${m}</button>`
+    ).join('');
+
+    // Legend
+    document.getElementById('tsne-legend').innerHTML = D.class_names.map((c, i) =>
+        `<div class="legend-item"><div class="legend-dot" style="background:${CLASS_COLORS[i]}"></div>${c}</div>`
+    ).join('');
+
+    window._tsneData = D;
+    switchTSNE('Raw Features');
+}
+
+function switchTSNE(model, btn) {
+    if (btn) {
+        document.querySelectorAll('#tsne-controls .viz-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }
+    const D = window._tsneData;
+    const nodes = D.subgraph.nodes;
+    const tsne = D.models[model].tsne_sample;
+    const viz = document.getElementById('tsne-viz');
+    viz.innerHTML = '';
+
+    const w = viz.clientWidth, h = viz.clientHeight;
+    const svg = d3.select(viz).append('svg').attr('width', w).attr('height', h);
+
+    const xs = tsne.map(t => t[0]), ys = tsne.map(t => t[1]);
+    const xScale = d3.scaleLinear().domain([d3.min(xs)*1.1, d3.max(xs)*1.1]).range([40, w-40]);
+    const yScale = d3.scaleLinear().domain([d3.min(ys)*1.1, d3.max(ys)*1.1]).range([40, h-40]);
+
+    const tooltip = d3.select(viz).append('div').attr('class','tooltip-custom').style('opacity',0);
+
+    svg.selectAll('circle')
+        .data(nodes)
+        .enter().append('circle')
+        .attr('cx', (d, i) => xScale(tsne[i][0]))
+        .attr('cy', (d, i) => yScale(tsne[i][1]))
+        .attr('r', 0)
+        .attr('fill', d => CLASS_COLORS[d.label])
+        .attr('opacity', 0.75)
+        .attr('stroke', 'rgba(255,255,255,0.1)')
+        .attr('stroke-width', 0.5)
+        .on('mouseover', function(ev, d) {
+            d3.select(this).attr('r', 8).attr('opacity', 1).attr('stroke', '#fff').attr('stroke-width', 2);
+            tooltip.style('opacity', 1)
+                .html(`<strong>${d.class}</strong><br>Degree: ${d.degree}<br>Consistency: ${d.neighbor_consistency}`)
+                .style('left', (ev.offsetX + 15) + 'px')
+                .style('top', (ev.offsetY - 10) + 'px');
+        })
+        .on('mouseout', function() {
+            d3.select(this).attr('r', d => 3 + Math.min(d.degree/5, 5)).attr('opacity', 0.75).attr('stroke', 'rgba(255,255,255,0.1)').attr('stroke-width', 0.5);
+            tooltip.style('opacity', 0);
+        })
+        .transition().duration(800).delay((d, i) => i * 0.5)
+        .attr('r', d => 3 + Math.min(d.degree/5, 5));
+
+    // Title
+    svg.append('text').attr('x', 20).attr('y', 30)
+        .attr('fill', '#a0a0b8').attr('font-size', '14px').attr('font-weight', '600')
+        .text(model + ' Embedding Space');
+}
+
+// --- TRAINING CURVES ---
+function renderTraining(D) {
+    const names = ['GCN', 'GAT', 'GraphSAGE'];
+    const makeDatasets = (key) => names.map(n => ({
+        label: n,
+        data: D.models[n].history[key],
+        borderColor: MODEL_COLORS[n],
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.3,
+    }));
+    const opts = (title) => ({
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { usePointStyle: true, pointStyle: 'circle' } } },
+        scales: { y: { grid: { color: '#1a1a2e' } }, x: { title: { display: true, text: 'Epoch' }, grid: { display: false }, ticks: { maxTicksLimit: 10 } } },
+        interaction: { intersect: false, mode: 'index' },
+    });
+
+    new Chart(document.getElementById('chart-loss'), { type: 'line', data: { labels: D.models.GCN.history.train_loss.map((_,i)=>i+1), datasets: makeDatasets('train_loss') }, options: opts() });
+    new Chart(document.getElementById('chart-val-acc'), { type: 'line', data: { labels: D.models.GCN.history.val_acc.map((_,i)=>i+1), datasets: makeDatasets('val_acc') }, options: opts() });
+    new Chart(document.getElementById('chart-val-f1'), { type: 'line', data: { labels: D.models.GCN.history.val_f1.map((_,i)=>i+1), datasets: makeDatasets('val_f1') }, options: opts() });
+
+    // Overfit chart — train vs val for best model
+    const best = D.best_model;
+    new Chart(document.getElementById('chart-overfit'), {
+        type: 'line',
+        data: {
+            labels: D.models[best].history.train_acc.map((_,i)=>i+1),
+            datasets: [
+                { label: `${best} Train`, data: D.models[best].history.train_acc, borderColor: MODEL_COLORS[best], borderWidth: 2, pointRadius: 0, tension: 0.3, backgroundColor: 'transparent' },
+                { label: `${best} Val`, data: D.models[best].history.val_acc, borderColor: MODEL_COLORS[best], borderWidth: 2, borderDash: [5,5], pointRadius: 0, tension: 0.3, backgroundColor: 'transparent' },
+            ]
+        },
+        options: opts()
+    });
+}
+
+// --- CLUSTER ANALYSIS ---
+function renderClusters(D) {
+    const all = ['Raw Features', 'GCN', 'GAT', 'GraphSAGE'];
+    const maxNMI = Math.max(...all.map(n => D.cluster_analysis[n]?.nmi || 0));
+
+    document.getElementById('cluster-cards').innerHTML = all.map(name => {
+        const c = D.cluster_analysis[name];
+        if (!c) return '';
+        const isBest = c.nmi === maxNMI;
+        return `<div class="card metric-card">
+            <div class="big-num" style="color:${MODEL_COLORS[name]}">${c.nmi}</div>
+            <div class="metric-label">NMI — ${name}</div>
+            <div class="metric-sub">Silhouette: ${c.silhouette}</div>
+            ${isBest ? '<div style="color:var(--green);font-size:0.8rem;margin-top:0.5rem;">Best clustering</div>' : ''}
+        </div>`;
+    }).join('');
+
+    // NMI bar chart
+    new Chart(document.getElementById('chart-nmi'), {
+        type: 'bar',
+        data: {
+            labels: all,
+            datasets: [{
+                data: all.map(n => D.cluster_analysis[n]?.nmi || 0),
+                backgroundColor: all.map(n => MODEL_COLORS[n]),
+                borderRadius: 8,
+                borderSkipped: false,
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, max: 1, title: { display: true, text: 'NMI Score' }, grid: { color: '#1a1a2e' } }, x: { grid: { display: false } } }
+        }
+    });
+}
+
+// --- INTERACTIVE GRAPH ---
+function renderGraph(D) {
+    const viz = document.getElementById('graph-viz');
+    const w = viz.clientWidth, h = viz.clientHeight;
+    const svg = d3.select(viz).append('svg').attr('width', w).attr('height', h);
+
+    // Legend
+    document.getElementById('graph-legend').innerHTML = D.class_names.map((c, i) =>
+        `<div class="legend-item"><div class="legend-dot" style="background:${CLASS_COLORS[i]}"></div>${c}</div>`
+    ).join('');
+
+    const nodes = D.subgraph.nodes.map(d => ({...d}));
+    const links = D.subgraph.edges.map(d => ({source: d.source, target: d.target}));
+
+    const simulation = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id(d => d.id).distance(30))
+        .force('charge', d3.forceManyBody().strength(-40))
+        .force('center', d3.forceCenter(w/2, h/2))
+        .force('collision', d3.forceCollide().radius(d => 3 + Math.min(d.degree/5, 5)));
+
+    const link = svg.append('g')
+        .selectAll('line').data(links).enter().append('line')
+        .attr('stroke', '#2a2a3e').attr('stroke-width', 0.5).attr('opacity', 0.3);
+
+    const tooltip = d3.select(viz).append('div').attr('class','tooltip-custom').style('opacity',0);
+
+    const node = svg.append('g')
+        .selectAll('circle').data(nodes).enter().append('circle')
+        .attr('r', d => 3 + Math.min(d.degree/5, 5))
+        .attr('fill', d => CLASS_COLORS[d.label])
+        .attr('opacity', 0.85)
+        .attr('stroke', 'rgba(255,255,255,0.1)')
+        .attr('stroke-width', 0.5)
+        .call(d3.drag()
+            .on('start', (ev, d) => { if (!ev.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+            .on('drag', (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+            .on('end', (ev, d) => { if (!ev.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+        )
+        .on('mouseover', function(ev, d) {
+            d3.select(this).attr('r', 12).attr('opacity', 1).attr('stroke', '#fff').attr('stroke-width', 3);
+            // Highlight neighbors
+            const neighbors = new Set();
+            links.forEach(l => {
+                const s = typeof l.source === 'object' ? l.source.id : l.source;
+                const t = typeof l.target === 'object' ? l.target.id : l.target;
+                if (s === d.id) neighbors.add(t);
+                if (t === d.id) neighbors.add(s);
+            });
+            node.attr('opacity', n => neighbors.has(n.id) || n.id === d.id ? 1 : 0.1);
+            link.attr('opacity', l => {
+                const s = typeof l.source === 'object' ? l.source.id : l.source;
+                const t = typeof l.target === 'object' ? l.target.id : l.target;
+                return s === d.id || t === d.id ? 0.8 : 0.03;
+            }).attr('stroke-width', l => {
+                const s = typeof l.source === 'object' ? l.source.id : l.source;
+                const t = typeof l.target === 'object' ? l.target.id : l.target;
+                return s === d.id || t === d.id ? 2 : 0.5;
+            }).attr('stroke', l => {
+                const s = typeof l.source === 'object' ? l.source.id : l.source;
+                const t = typeof l.target === 'object' ? l.target.id : l.target;
+                return s === d.id || t === d.id ? CLASS_COLORS[d.label] : '#2a2a3e';
+            });
+            tooltip.style('opacity', 1)
+                .html(`<strong>${d.class}</strong><br>Degree: ${d.degree}<br>Neighbors: ${neighbors.size}<br>Label consistency: ${d.neighbor_consistency}`)
+                .style('left', (ev.offsetX + 15) + 'px')
+                .style('top', (ev.offsetY - 10) + 'px');
+        })
+        .on('mouseout', function() {
+            d3.select(this).attr('r', d => 3 + Math.min(d.degree/5, 5)).attr('opacity', 0.85).attr('stroke', 'rgba(255,255,255,0.1)').attr('stroke-width', 0.5);
+            node.attr('opacity', 0.85);
+            link.attr('opacity', 0.3).attr('stroke-width', 0.5).attr('stroke', '#2a2a3e');
+            tooltip.style('opacity', 0);
+        });
+
+    simulation.on('tick', () => {
+        link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+            .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+        node.attr('cx', d => d.x).attr('cy', d => d.y);
+    });
+}
+
+// --- CONFUSION MATRICES ---
+function renderConfusion(D) {
+    const names = ['GCN', 'GAT', 'GraphSAGE'];
+    document.getElementById('cm-section').innerHTML = names.map(name => {
+        const cm = D.models[name].test.confusion_matrix;
+        const maxVal = Math.max(...cm.flat());
+        const cells = cm.map((row, i) => row.map((val, j) => {
+            const intensity = val / maxVal;
+            const bg = i === j
+                ? `rgba(52,211,153,${0.1 + intensity * 0.7})`
+                : val > 0 ? `rgba(248,113,113,${intensity * 0.5})` : 'transparent';
+            return `<div class="cm-cell" style="background:${bg}">${val}</div>`;
+        }).join('')).join('');
+        return `<div class="card">
+            <h3 style="color:${MODEL_COLORS[name]}">${name} Confusion Matrix</h3>
+            <div style="overflow-x:auto;margin-top:1rem;">
+                <div class="cm-grid" style="grid-template-columns:repeat(${D.class_names.length},50px)">
+                    ${cells}
+                </div>
+            </div>
+            <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text2);">
+                Rows: actual | Columns: predicted<br>
+                ${D.class_names.map((c,i) => `${i}: ${c}`).join(' | ')}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// --- INSIGHTS ---
+function renderInsights(D) {
+    const best = D.best_model;
+    const bestAcc = (D.models[best].test.accuracy * 100).toFixed(1);
+    const rawNMI = D.cluster_analysis['Raw Features'].nmi;
+    const bestNMI = Math.max(...['GCN','GAT','GraphSAGE'].map(n => D.cluster_analysis[n].nmi));
+    const improvement = (bestNMI / rawNMI).toFixed(1);
+
+    document.getElementById('insights-content').innerHTML = `
+        <div class="grid grid-2">
+            <div class="insight-box">
+                <h3>Message Passing is the Key</h3>
+                <p>GNNs achieve <strong>${bestAcc}%</strong> accuracy by aggregating information from neighboring nodes.
+                The Cora network has <strong>${D.graph_stats.homophily}</strong> homophily — papers cite papers in the same field
+                ~81% of the time. GNNs exploit this relational inductive bias to dramatically outperform feature-only approaches.</p>
+            </div>
+            <div class="insight-box">
+                <h3>Representation Quality</h3>
+                <p>GNN embeddings improve clustering NMI by <strong>${improvement}x</strong> over raw features
+                (${rawNMI} → ${bestNMI}). This means the learned representations capture community
+                structure that's invisible in the original feature space. The embeddings are useful for downstream
+                tasks like link prediction, recommendation, and anomaly detection.</p>
+            </div>
+            <div class="insight-box">
+                <h3>Attention Matters</h3>
+                <p><strong>GAT</strong> outperforms GCN and GraphSAGE because its attention mechanism learns
+                <em>which neighbors matter most</em>. Not all citations are equal — a seminal paper in your field
+                is more informative than a tangential reference. GAT learns these weights end-to-end.</p>
+            </div>
+            <div class="insight-box">
+                <h3>Practical Takeaways</h3>
+                <ul>
+                    <li><strong>Start with GAT</strong> for heterogeneous networks where neighbor importance varies.</li>
+                    <li><strong>Use GCN</strong> when you need fast, reliable baselines with fewer parameters.</li>
+                    <li><strong>GraphSAGE</strong> shines for inductive learning — classifying new nodes without retraining.</li>
+                    <li><strong>Always visualize embeddings</strong> — t-SNE of GNN representations is the fastest way to verify your model is learning meaningful structure.</li>
+                </ul>
+            </div>
+        </div>
+    `;
+}
+
+// --- SCROLL NAV HIGHLIGHT ---
+const sections = document.querySelectorAll('section');
+const navLinks = document.querySelectorAll('nav a');
+window.addEventListener('scroll', () => {
+    let current = '';
+    sections.forEach(s => { if (window.scrollY >= s.offsetTop - 200) current = s.id; });
+    navLinks.forEach(a => {
+        a.classList.remove('active');
+        if (a.getAttribute('href') === '#' + current) a.classList.add('active');
+    });
+});
+</script>
+</body>
+</html>
