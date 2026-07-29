@@ -8,7 +8,7 @@
   <a href="https://colab.research.google.com/github/sugeerth/gnn/blob/main/GNN_Social_Network_Analysis.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 </p>
 
-**How GNNs learn powerful node representations that reveal hidden community structure in networks.**
+**How GNNs learn node representations that reveal community structure in citation networks.**
 
 This project trains **GCN**, **GAT**, and **GraphSAGE** on the Cora citation network and demonstrates that GNN-learned embeddings capture community structure **4.5x better** than raw features (NMI: 0.13 → 0.59).
 
@@ -25,7 +25,7 @@ This project trains **GCN**, **GAT**, and **GraphSAGE** on the Cora citation net
 
 - **Message passing works**: GNNs exploit the 81% homophily in citation networks — papers cite papers in the same field
 - **Attention matters**: GAT outperforms by learning *which* neighbors are most informative
-- **Embeddings are powerful**: GNN representations form tight, well-separated clusters useful for downstream tasks like link prediction and recommendation
+- **Embeddings cluster cleanly**: GNN representations form tight, well-separated clusters useful for downstream tasks like link prediction and recommendation
 
 ## Interactive Demo
 
@@ -67,7 +67,7 @@ python3 train_gnn.py
 ## How It Works
 
 ### The Network
-The **Cora citation network** contains 2,708 scientific papers classified into 7 research areas (Neural Networks, Genetic Algorithms, etc.), connected by 5,429 citation links. Each paper has a 1,433-dimensional bag-of-words feature vector.
+The **Cora citation network** contains 2,708 scientific papers classified into 7 research areas (Neural Networks, Genetic Algorithms, etc.), connected by 5,278 undirected citation links (5,429 directed citations). Each paper has a 1,433-dimensional bag-of-words feature vector.
 
 ### GNN Architectures
 

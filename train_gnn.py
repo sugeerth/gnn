@@ -2,9 +2,9 @@
 """
 GNN Social Network Analysis — Representation Learning & Community Detection
 ============================================================================
-Trains GCN, GAT, and GraphSAGE on real-world networks.
-Demonstrates how GNNs learn powerful node representations that capture
-community structure, influence patterns, and latent social dynamics.
+Trains GCN, GAT, and GraphSAGE on the Cora citation network.
+Shows that GNN-learned node embeddings capture community structure far better
+than raw bag-of-words features (clustering NMI 0.13 -> 0.59).
 
 Outputs: docs/results.json (consumed by the interactive website)
 """
@@ -62,7 +62,7 @@ print(f"{'='*60}\n")
 data = data.to(DEVICE)
 
 # ---------------------------------------------------------------------------
-# 2. Model Definitions — Three powerful GNN architectures
+# 2. Model Definitions — GCN, GAT, GraphSAGE
 # ---------------------------------------------------------------------------
 
 class GCN(torch.nn.Module):
@@ -336,7 +336,7 @@ graph_stats["louvain_communities"] = len(communities)
 graph_stats["louvain_nmi"] = round(float(louvain_nmi), 4)
 
 # ---------------------------------------------------------------------------
-# 8. Neighborhood analysis — what makes GNN powerful
+# 8. Neighborhood analysis — label consistency across hops
 # ---------------------------------------------------------------------------
 print("Analyzing neighborhood label consistency...")
 
@@ -412,7 +412,7 @@ os.makedirs("docs", exist_ok=True)
 
 output = {
     "dataset": "Cora Citation Network",
-    "description": "2,708 scientific papers classified into 7 research areas, connected by 5,429 citation links. Each paper has a 1,433-dim bag-of-words feature vector.",
+    "description": "2,708 scientific papers classified into 7 research areas, connected by 5,278 undirected citation links (5,429 directed citations). Each paper has a 1,433-dim bag-of-words feature vector.",
     "graph_stats": graph_stats,
     "class_names": CLASS_NAMES,
     "models": {},
@@ -456,5 +456,5 @@ for name in results:
     print(f"{name:<12} {r['test']['accuracy']:>8.4f} {r['test']['f1_macro']:>8.4f} "
           f"{c['nmi']:>8.4f} {r['params']:>10,} {r['training_time']:>7.1f}s")
 print(f"\nRaw Features — NMI: {cluster_results['Raw Features']['nmi']:.4f} "
-      f"(GNNs improve clustering by learning graph structure!)")
+      f"(GNNs improve clustering by learning graph structure)")
 print(f"{'='*60}")
