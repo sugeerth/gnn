@@ -147,7 +147,7 @@ def pretrain_dgi(enc, data, cfg):
                 + F.binary_cross_entropy_with_logits(neg @ v, zeros))
         loss.backward()
         opt.step()
-        hist.append(float(loss))
+        hist.append(loss.item())
         best.update(float(loss), enc)
     enc.load_state_dict(best.state)
     return hist
@@ -178,7 +178,7 @@ def pretrain_grace(enc, data, cfg):
         loss = _nt_xent(proj(enc(x1, e1)), proj(enc(x2, e2)), cfg["tau"])
         loss.backward()
         opt.step()
-        hist.append(float(loss))
+        hist.append(loss.item())
         best.update(float(loss), enc)
     enc.load_state_dict(best.state)
     return hist
@@ -218,7 +218,7 @@ def pretrain_bgrl(enc, data, cfg):
         with torch.no_grad():
             for po, pt in zip(enc.parameters(), target.parameters()):
                 pt.mul_(m).add_(po.detach(), alpha=1 - m)
-        hist.append(float(loss))
+        hist.append(loss.item())
     # BGRL's loss is not a reliable model-selection signal; keep the final online encoder.
     return hist
 
@@ -247,7 +247,7 @@ def pretrain_graphmae(enc, data, cfg):
         loss = (1 - F.cosine_similarity(rec[m], data.x[m], dim=-1)).pow(cfg["gamma"]).mean()
         loss.backward()
         opt.step()
-        hist.append(float(loss))
+        hist.append(loss.item())
         best.update(float(loss), enc)
     enc.load_state_dict(best.state)
     return hist
@@ -268,7 +268,7 @@ def pretrain_gae(enc, data, cfg):
                 + F.binary_cross_entropy_with_logits(neg_l, torch.zeros_like(neg_l)))
         loss.backward()
         opt.step()
-        hist.append(float(loss))
+        hist.append(loss.item())
         best.update(float(loss), enc)
     enc.load_state_dict(best.state)
     return hist
@@ -291,7 +291,7 @@ def default_pretrain_cfg(scale):
                   "pe1": 0.2, "pe2": 0.4, "pf1": 0.3, "pf2": 0.4},
         "BGRL": {"epochs": e(500), "lr": 1e-3, "wd": 1e-5, "ema": 0.99, "pred_hid": 512,
                  "pe1": 0.3, "pe2": 0.2, "pf1": 0.3, "pf2": 0.2},
-        "GraphMAE": {"epochs": e(800), "lr": 1e-3, "wd": 2e-4, "mask_rate": 0.5, "gamma": 3},
+        "GraphMAE": {"epochs": e(800), "lr": 1e-3, "wd": 2e-4, "mask_rate": 0.75, "gamma": 3},
         "GAE": {"epochs": e(300), "lr": 1e-2},
     }
 
@@ -547,8 +547,120 @@ def inference_ms(fn, reps=50):
 
 
 # ---------------------------------------------------------------------------
-# Main experiment
+# Main experiment: seeds run in parallel worker processes
 # ---------------------------------------------------------------------------
+_DATA = None
+
+
+def load_data():
+    global _DATA
+    if _DATA is None:
+        data = Planetoid(root="./data/Cora", name="Cora", transform=T.NormalizeFeatures())[0]
+        data.val_idx = data.val_mask.nonzero().view(-1)
+        data.test_idx = data.test_mask.nonzero().view(-1)
+        _DATA = data
+    return _DATA
+
+
+def seed_pretrain_finetune(seed, a, pcfg, budgets):
+    """Phase 1 + 2 for one seed: pre-train every method, probe it, fine-tune every init."""
+    torch.set_num_threads(a.threads_per_worker)
+    data = load_data()
+    y_np = data.y.numpy()
+    probe_split = make_split(data, "public", 0).numpy()
+    vi, ti = data.val_idx.numpy(), data.test_idx.numpy()
+    states, pre = {}, {}
+
+    set_seed(seed)  # random-init encoder: the "no pre-training" reference point
+    emb = embed(Encoder(data.num_features, a.hidden, a.out), data)
+    pre["Scratch"] = {"probe": linear_probe(emb, y_np, probe_split, vi, ti)["test"],
+                      "nmi": kmeans_nmi(emb, y_np, seed), "time": 0.0, "loss_curve": None}
+    for m in METHODS:
+        fn, norm = PRETRAINERS[m]
+        set_seed(seed)
+        enc = Encoder(data.num_features, a.hidden, a.out, norm=norm)
+        t0 = time.time()
+        hist = fn(enc, data, pcfg[m])
+        dt = time.time() - t0
+        states[m] = copy.deepcopy(enc.state_dict())
+        emb = embed(enc, data)
+        pr = linear_probe(emb, y_np, probe_split, vi, ti)
+        nmi = kmeans_nmi(emb, y_np, seed)
+        step = max(1, len(hist) // 100)
+        pre[m] = {"probe": pr["test"], "nmi": nmi, "time": dt,
+                  "loss_curve": [round(v, 5) for v in hist[::step]]}
+        print(f"  [pre-train] seed {seed} {m:<9} {dt:6.1f}s | linear probe {pr['test']:.4f} "
+              f"| NMI {nmi:.4f}", flush=True)
+
+    ft = {}
+    for b in budgets:
+        tr = make_split(data, b, seed)
+        ft[str(b)] = {}
+        for init in INITS:
+            st = None if init == "Scratch" else states[init]
+            norm = init != "Scratch" and PRETRAINERS[init][1]
+            logp, va, lr = finetune_best_lr(st, norm, data, tr, data.y[tr], seed, a)
+            ft[str(b)][init] = {"logp": logp, "val": va, "lr": lr,
+                                "test": acc(logp, data.y, data.test_idx)}
+        row = " ".join(f"{i}={ft[str(b)][i]['test']:.3f}" for i in INITS)
+        print(f"  [fine-tune] budget {b!s:>6} seed {seed}: {row}", flush=True)
+    return {"states": states, "pre": pre, "ft": ft}
+
+
+STAGES = ["Scratch", "Pre-trained", "+ Self-training", "+ Correct&Smooth",
+          "Ensemble (all inits)", "Ensemble + C&S"]
+
+
+def seed_posttrain(seed, a, budgets, best_init, state, ft_seed):
+    """Phase 3 for one seed: self-training, C&S, ensembling, calibration, distillation."""
+    torch.set_num_threads(a.threads_per_worker)
+    data = load_data()
+    y = data.y
+    norm = PRETRAINERS[best_init][1]
+    res = {}
+    for b in budgets:
+        bk = str(b)
+        tr = make_split(data, b, seed)
+        base = ft_seed[bk][best_init]
+        r = {"Scratch": ft_seed[bk]["Scratch"]["test"], "Pre-trained": base["test"]}
+
+        st_logp, _, r_best, trace = self_train(
+            state, norm, data, tr, seed, base["lr"], base["logp"], base["val"], a)
+        r["+ Self-training"] = acc(st_logp, y, data.test_idx)
+
+        cs_probs, _, alphas = correct_and_smooth(st_logp, data, tr)
+        r["+ Correct&Smooth"] = acc(cs_probs, y, data.test_idx)
+
+        ens = torch.stack([ft_seed[bk][i]["logp"].exp() for i in INITS]).mean(0)
+        r["Ensemble (all inits)"] = acc(ens, y, data.test_idx)
+        ens_cs, _, _ = correct_and_smooth(ens.log(), data, tr)
+        r["Ensemble + C&S"] = acc(ens_cs, y, data.test_idx)
+
+        final_logp = cs_probs.log()
+        scaled, t = temperature_scale(final_logp, data)
+        d, _ = distill(scaled.exp(), data, tr, seed, a)
+        res[bk] = {"stages": r, "rounds": r_best, "trace": trace, "cs_alphas": alphas,
+                   "calib": {"before": calib_report(final_logp, data),
+                             "after": calib_report(scaled, data), "T": t},
+                   "distill": {"mlp_scratch": d["mlp_scratch"], "mlp_distilled": d["mlp_distilled"],
+                               "teacher": r["+ Correct&Smooth"], "lambda": d["lambda"]}}
+        print(f"  [post-train] budget {bk:>6} seed {seed}: scratch {r['Scratch']:.3f} -> "
+              f"pre {r['Pre-trained']:.3f} -> ST(r={r_best}) {r['+ Self-training']:.3f} -> "
+              f"C&S{alphas} {r['+ Correct&Smooth']:.3f} | ens+C&S {r['Ensemble + C&S']:.3f} | "
+              f"MLP {d['mlp_scratch']:.3f} -> distilled {d['mlp_distilled']:.3f}", flush=True)
+    return res
+
+
+def run_parallel(fn, arg_list, workers):
+    if workers <= 1:
+        return [fn(*args) for args in arg_list]
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as ex:
+        futs = [ex.submit(fn, *args) for args in arg_list]
+        return [f.result() for f in futs]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seeds", type=int, default=5)
@@ -558,170 +670,87 @@ def main():
     ap.add_argument("--out", type=int, default=256)
     ap.add_argument("--ft-epochs", type=int, default=300)
     ap.add_argument("--patience", type=int, default=60)
-    ap.add_argument("--enc-lrs", default="0.001,0.01")
+    ap.add_argument("--enc-lrs", default="0,0.001,0.01",
+                    help="encoder LR grid for fine-tuning (0 = frozen encoder, head only)")
     ap.add_argument("--pretrain-scale", type=float, default=1.0,
                     help="multiplier on pre-training epochs")
     ap.add_argument("--st-rounds", type=int, default=3)
     ap.add_argument("--st-per-class", type=int, default=40)
     ap.add_argument("--st-threshold", type=float, default=0.7)
-    ap.add_argument("--threads", type=int, default=os.cpu_count())
+    ap.add_argument("--workers", type=int, default=min(os.cpu_count() or 1, 5),
+                    help="parallel seed workers")
     ap.add_argument("--quick", action="store_true", help="tiny smoke-test run")
     ap.add_argument("--out-prefix", default="docs/pretrain_posttrain")
     a = ap.parse_args()
     if a.quick:
-        a.seeds, a.budgets, a.ft_epochs, a.patience = 1, "3,public", 40, 20
+        a.seeds, a.budgets, a.ft_epochs, a.patience = 2, "3,public", 40, 20
         a.pretrain_scale, a.st_rounds = 0.05, 1
-    a.enc_lrs = [float(x) for x in a.enc_lrs.split(",")]
+    a.enc_lrs = [float(x) for x in str(a.enc_lrs).split(",")]
+    a.workers = max(1, min(a.workers, a.seeds))
+    a.threads_per_worker = max(1, (os.cpu_count() or 1) // a.workers)
     budgets = [b if b == "public" else int(b) for b in a.budgets.split(",")]
-    torch.set_num_threads(a.threads)
+    torch.set_num_threads(os.cpu_count() or 1)
 
-    dataset = Planetoid(root="./data/Cora", name="Cora", transform=T.NormalizeFeatures())
-    data = dataset[0]
-    data.val_idx = data.val_mask.nonzero().view(-1)
-    data.test_idx = data.test_mask.nonzero().view(-1)
-    y_np = data.y.numpy()
+    data = load_data()  # also downloads Cora once before workers start
     pcfg = default_pretrain_cfg(a.pretrain_scale)
     t_start = time.time()
-    print(f"Cora: {data.num_nodes} nodes, {data.num_edges} directed edges, "
-          f"{data.num_features} features | seeds={a.seeds} budgets={budgets}")
+    print(f"Cora: {data.num_nodes} nodes, {data.num_edges} directed edges, {data.num_features} "
+          f"features | seeds={a.seeds} budgets={budgets} workers={a.workers}", flush=True)
 
-    # ---------------- Phase 1: self-supervised pre-training ----------------
-    print("\n=== Phase 1: self-supervised pre-training ===")
-    states = {m: {} for m in METHODS}
-    pre = {m: {"probe": [], "nmi": [], "time": [], "loss_curve": None} for m in INITS}
-    pre_probe_split = make_split(data, "public", 0)
-    for seed in range(a.seeds):
-        # Random-init encoder: the "no pre-training" reference point for probes/NMI
-        set_seed(seed)
-        rnd = Encoder(data.num_features, a.hidden, a.out)
-        emb = embed(rnd, data)
-        pr = linear_probe(emb, y_np, pre_probe_split.numpy(), data.val_idx.numpy(), data.test_idx.numpy())
-        pre["Scratch"]["probe"].append(pr["test"])
-        pre["Scratch"]["nmi"].append(kmeans_nmi(emb, y_np, seed))
-        pre["Scratch"]["time"].append(0.0)
-        for m in METHODS:
-            fn, norm = PRETRAINERS[m]
-            set_seed(seed)
-            enc = Encoder(data.num_features, a.hidden, a.out, norm=norm)
-            t0 = time.time()
-            hist = fn(enc, data, pcfg[m])
-            dt = time.time() - t0
-            states[m][seed] = copy.deepcopy(enc.state_dict())
-            emb = embed(enc, data)
-            pr = linear_probe(emb, y_np, pre_probe_split.numpy(), data.val_idx.numpy(), data.test_idx.numpy())
-            nmi = kmeans_nmi(emb, y_np, seed)
-            pre[m]["probe"].append(pr["test"])
-            pre[m]["nmi"].append(nmi)
-            pre[m]["time"].append(dt)
-            if seed == 0:
-                step = max(1, len(hist) // 100)
-                pre[m]["loss_curve"] = [round(v, 5) for v in hist[::step]]
-            print(f"  seed {seed} {m:<9} {dt:6.1f}s | linear probe {pr['test']:.4f} | NMI {nmi:.4f}")
+    print("\n=== Phase 1+2: self-supervised pre-training, then fine-tuning ===", flush=True)
+    per_seed = run_parallel(seed_pretrain_finetune,
+                            [(s, a, pcfg, budgets) for s in range(a.seeds)], a.workers)
+
     pretrain_summary = {
-        m: {"linear_probe": mean_std(pre[m]["probe"]), "nmi": mean_std(pre[m]["nmi"]),
-            "time_s": float(np.mean(pre[m]["time"])), "loss_curve": pre[m]["loss_curve"]}
+        m: {"linear_probe": mean_std([r["pre"][m]["probe"] for r in per_seed]),
+            "nmi": mean_std([r["pre"][m]["nmi"] for r in per_seed]),
+            "time_s": float(np.mean([r["pre"][m]["time"] for r in per_seed])),
+            "loss_curve": per_seed[0]["pre"][m]["loss_curve"]}
         for m in INITS
     }
-
-    # ---------------- Phase 2: fine-tuning under label budgets ----------------
-    print("\n=== Phase 2: fine-tuning (scratch vs pre-trained) ===")
-    ft = {str(b): {i: [] for i in INITS} for b in budgets}  # list of dicts per seed
-    for b in budgets:
-        for seed in range(a.seeds):
-            tr = make_split(data, b, seed)
-            for init in INITS:
-                st = None if init == "Scratch" else states[init][seed]
-                norm = init != "Scratch" and PRETRAINERS[init][1]
-                logp, va, lr = finetune_best_lr(st, norm, data, tr, data.y[tr], seed, a)
-                ft[str(b)][init].append({"logp": logp, "val": va, "lr": lr,
-                                         "test": acc(logp, data.y, data.test_idx)})
-            row = " ".join(f"{i}={ft[str(b)][i][-1]['test']:.3f}" for i in INITS)
-            print(f"  budget {b!s:>6} seed {seed}: {row}")
+    bks = [str(b) for b in budgets]
     ft_summary = {
-        b: {i: {"test": mean_std([r["test"] for r in ft[b][i]]),
-                "val": mean_std([r["val"] for r in ft[b][i]]),
-                "enc_lr": [r["lr"] for r in ft[b][i]]} for i in INITS}
-        for b in ft
+        b: {i: {"test": mean_std([r["ft"][b][i]["test"] for r in per_seed]),
+                "val": mean_std([r["ft"][b][i]["val"] for r in per_seed]),
+                "enc_lr": [r["ft"][b][i]["lr"] for r in per_seed]} for i in INITS}
+        for b in bks
     }
-
     # Best pre-training method: highest mean *validation* accuracy across budgets
-    best_init = max(METHODS, key=lambda m: np.mean([ft_summary[b][m]["val"]["mean"] for b in ft]))
-    print(f"\n  Selected pre-training method (by mean val acc): {best_init}")
+    best_init = max(METHODS, key=lambda m: np.mean([ft_summary[b][m]["val"]["mean"] for b in bks]))
+    print(f"\n  Selected pre-training method (by mean val acc): {best_init}", flush=True)
 
-    # ---------------- Phase 3: post-training ----------------
-    print("\n=== Phase 3: post-training ===")
-    post = {}
-    calib = {}
-    distill_res = {}
-    st_traces = {}
-    for b in budgets:
-        bk = str(b)
-        stages = {k: [] for k in ["Scratch", "Pre-trained", "+ Self-training", "+ Correct&Smooth",
-                                  "Ensemble (all inits)", "Ensemble + C&S"]}
-        rounds_chosen, traces = [], []
-        cal_rows = {"before": [], "after": [], "T": []}
-        dist_rows = {"mlp_scratch": [], "mlp_distilled": [], "teacher": []}
-        for seed in range(a.seeds):
-            tr = make_split(data, b, seed)
-            y = data.y
-            base = ft[bk][best_init][seed]
-            norm = PRETRAINERS[best_init][1]
-            stages["Scratch"].append(ft[bk]["Scratch"][seed]["test"])
-            stages["Pre-trained"].append(base["test"])
+    print("\n=== Phase 3: post-training ===", flush=True)
+    post_seed = run_parallel(
+        seed_posttrain,
+        [(s, a, budgets, best_init, per_seed[s]["states"][best_init], per_seed[s]["ft"])
+         for s in range(a.seeds)], a.workers)
 
-            st_logp, st_val, r_best, trace = self_train(
-                states[best_init][seed], norm, data, tr, seed, base["lr"], base["logp"], base["val"], a)
-            stages["+ Self-training"].append(acc(st_logp, y, data.test_idx))
-            rounds_chosen.append(r_best)
-            traces.append(trace)
-
-            cs_probs, _, alphas = correct_and_smooth(st_logp, data, tr)
-            stages["+ Correct&Smooth"].append(acc(cs_probs, y, data.test_idx))
-
-            ens = torch.stack([ft[bk][i][seed]["logp"].exp() for i in INITS]).mean(0)
-            stages["Ensemble (all inits)"].append(acc(ens, y, data.test_idx))
-            ens_cs, _, _ = correct_and_smooth(ens.log(), data, tr)
-            stages["Ensemble + C&S"].append(acc(ens_cs, y, data.test_idx))
-
-            # Calibration of the final single-model pipeline (log of C&S probs)
-            final_logp = cs_probs.log()
-            scaled, t = temperature_scale(final_logp, data)
-            cal_rows["before"].append(calib_report(final_logp, data))
-            cal_rows["after"].append(calib_report(scaled, data))
-            cal_rows["T"].append(t)
-
-            # Distillation of the final pipeline into a graph-free MLP
-            d, student = distill(scaled.exp(), data, tr, seed, a)
-            dist_rows["mlp_scratch"].append(d["mlp_scratch"])
-            dist_rows["mlp_distilled"].append(d["mlp_distilled"])
-            dist_rows["teacher"].append(acc(cs_probs, y, data.test_idx))
-            print(f"  budget {bk:>6} seed {seed}: scratch {stages['Scratch'][-1]:.3f} -> "
-                  f"pre {base['test']:.3f} -> ST(r={r_best}) {stages['+ Self-training'][-1]:.3f} -> "
-                  f"C&S{alphas} {stages['+ Correct&Smooth'][-1]:.3f} | ens+C&S "
-                  f"{stages['Ensemble + C&S'][-1]:.3f} | MLP {d['mlp_scratch']:.3f} -> "
-                  f"distilled {d['mlp_distilled']:.3f}")
-        post[bk] = {k: mean_std(v) for k, v in stages.items()}
-        post[bk]["self_training_rounds"] = rounds_chosen
-        st_traces[bk] = traces
-        calib[bk] = {
-            "before": {k: mean_std([r[k] for r in cal_rows["before"]]) for k in ["ece", "nll", "acc"]},
-            "after": {k: mean_std([r[k] for r in cal_rows["after"]]) for k in ["ece", "nll", "acc"]},
-            "temperature": mean_std(cal_rows["T"]),
+    post, calib, distill_res, st_traces = {}, {}, {}, {}
+    for b in bks:
+        rows = [p[b] for p in post_seed]
+        post[b] = {k: mean_std([r["stages"][k] for r in rows]) for k in STAGES}
+        post[b]["self_training_rounds"] = [r["rounds"] for r in rows]
+        post[b]["cs_alphas"] = [list(r["cs_alphas"]) for r in rows]
+        st_traces[b] = [r["trace"] for r in rows]
+        calib[b] = {
+            "before": {k: mean_std([r["calib"]["before"][k] for r in rows]) for k in ["ece", "nll", "acc"]},
+            "after": {k: mean_std([r["calib"]["after"][k] for r in rows]) for k in ["ece", "nll", "acc"]},
+            "temperature": mean_std([r["calib"]["T"] for r in rows]),
         }
-        distill_res[bk] = {k: mean_std(v) for k, v in dist_rows.items()}
+        distill_res[b] = {k: mean_std([r["distill"][k] for r in rows])
+                          for k in ["teacher", "mlp_scratch", "mlp_distilled"]}
 
-    # Inference cost: GCN teacher vs distilled MLP (single forward on full graph)
-    enc = Encoder(data.num_features, a.hidden, a.out)
-    gcn = Classifier(enc, len(CLASS_NAMES), 0.5).eval()
+    # Inference cost: GCN vs MLP (single forward over the full graph, all threads)
+    gcn = Classifier(Encoder(data.num_features, a.hidden, a.out), len(CLASS_NAMES), 0.5).eval()
     mlp = MLP(data.num_features, a.hidden, len(CLASS_NAMES)).eval()
     speed = {"gcn_ms": inference_ms(lambda: gcn(data.x, data.edge_index)),
              "mlp_ms": inference_ms(lambda: mlp(data.x))}
 
     elapsed = time.time() - t_start
     out = {
-        "config": {k: v for k, v in vars(a).items()},
+        "config": dict(vars(a)),
         "pretrain_config": pcfg,
-        "budgets": [str(b) for b in budgets],
+        "budgets": bks,
         "inits": INITS,
         "best_pretrain_method": best_init,
         "pretrain": pretrain_summary,
