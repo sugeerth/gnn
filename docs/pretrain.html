@@ -293,6 +293,7 @@ pre.cmd { margin: 0; background: var(--sheet); border: 1px solid var(--rule); bo
         <div class="label">Stage 3 · post-training</div>
         <h2 id="h-post">What post-training adds on top</h2>
         <p class="muted">The stack starts from the pre-trained init with the best validation score and adds one step at a time. Validation can reject any step, so a step that does not help shows as a zero. The budget follows the slider above.</p>
+        <p><a href="posttrain.html" style="color:var(--accent);font-weight:600">See the post-training deep dive: self-ensembling self-training, round by round →</a></p>
       </div>
       <div class="sheet">
         <div class="row"><h3 id="wf-title">Accuracy waterfall</h3><div class="seg" id="wf-seg" role="group" aria-label="Label budget"></div></div>
@@ -346,6 +347,8 @@ const blabel = b => b === "public" ? "20" : b;
 const blong = b => b === "public" ? "20 (public split)" : `${b}`;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const ms = (o, d = 1, k = 100) => `${(o.mean * k).toFixed(d)} ± ${(o.std * k).toFixed(d)}`;
+const SEST = "Self-ensembling self-training";
+const finalOf = P => Math.max(...["+ Correct&Smooth", "Ensemble + C&S", SEST].filter(k => P[k]).map(k => P[k].mean));
 const signed = (v, d = 1) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(d)}`;
 
 function svg(w, h, label) { const s = document.createElementNS(NS, "svg"); s.setAttribute("viewBox", `0 0 ${w} ${h}`); s.setAttribute("role", "img"); if (label) s.setAttribute("aria-label", label); return s; }
@@ -608,7 +611,7 @@ function waterfall() {
   document.querySelectorAll("#wf-seg button").forEach((t, i) => t.setAttribute("aria-pressed", i === bi));
   document.getElementById("wf-title").textContent = `Accuracy waterfall · ${blong(b)} label${b === "1" ? "" : "s"} per area`;
   const steps = [["Scratch", P["Scratch"]], [`Pre-train (${D.best_pretrain_method})`, P["Pre-trained"]], ["+ Self-training", P["+ Self-training"]], ["+ Correct & Smooth", P["+ Correct&Smooth"]]];
-  const ens = P["Ensemble + C&S"];
+  const hasS = !!P[SEST], ens = hasS ? P[SEST] : P["Ensemble + C&S"];
   const vals = [...steps.map(s => s[1].mean), ens.mean];
   const lo = Math.max(0, Math.floor((Math.min(...vals) - 0.06) * 20) / 20), hi = Math.min(1, Math.ceil((Math.max(...vals) + 0.03) * 20) / 20);
   const W = 760, H = 300, L = 40, R = 16, T = 18, B = 54, s = svg(W, H, "Post-training waterfall");
@@ -642,9 +645,9 @@ function waterfall() {
   el("rect", { x: x(4), y: y(fin.mean), width: bw, height: y(lo) - y(fin.mean), rx: 3, style: "fill:var(--accent)", "data-tip": `Single-model pipeline\n${ms(fin)} %` }, s);
   el("text", { x: x(4) + bw / 2, y: y(fin.mean) - 6, "text-anchor": "middle", class: "strong" }, s, pct(fin.mean));
   label(4, "Single model total");
-  el("rect", { x: x(5), y: y(ens.mean), width: bw, height: y(lo) - y(ens.mean), rx: 3, style: "fill:var(--i5)", "data-tip": `Val-selected ensemble + C&S\n${ms(ens)} %\n(ensemble alone ${ms(P["Ensemble (val-selected)"])} %)` }, s);
+  el("rect", { x: x(5), y: y(ens.mean), width: bw, height: y(lo) - y(ens.mean), rx: 3, style: `fill:${hasS ? "var(--good)" : "var(--i5)"}`, "data-tip": hasS ? `Self-ensembling self-training\n${ms(ens)} %\n(ensemble + C&S ${ms(P["Ensemble + C&S"])} %)` : `Val-selected ensemble + C&S\n${ms(ens)} %` }, s);
   el("text", { x: x(5) + bw / 2, y: y(ens.mean) - 6, "text-anchor": "middle", class: "strong" }, s, pct(ens.mean));
-  label(5, "Ensemble + C&S");
+  label(5, hasS ? "Self-training loop" : "Ensemble + C&S");
   el("line", { x1: L + 4 * cw, x2: L + 4 * cw, y1: T, y2: H - B + 4, style: "stroke:var(--rule)" }, s);
   document.getElementById("wf-chart").replaceChildren(s);
   const rounds = P.self_training_rounds || [];
@@ -706,7 +709,7 @@ function findings() {
   const failed = D.inits.filter(m => m !== "Scratch" && (D.pretrain[m].nmi.mean < 0.05 || D.pretrain[m].linear_probe.mean < D.pretrain.Scratch.linear_probe.mean));
   const items = [
     [`Pre-training matters most when labels are scarcest`, `With ${blong(b0)} label${b0 === "1" ? "" : "s"} per area, ${best} changes accuracy by ${signed(gain0)} pts over scratch. At ${blong(bp)} labels the gap is ${signed(gainP)} pts, because the labels themselves already carry most of the signal.`],
-    [`Post-training needs labels to work with`, `On top of the pre-trained model, the validation-gated stack adds ${D.budgets.map(b => `${signed((Math.max(D.posttrain[b]["+ Correct&Smooth"].mean, D.posttrain[b]["Ensemble + C&S"].mean) - D.posttrain[b]["Pre-trained"].mean) * 100)} at ${blabel(b)}`).join(", ")} labels/area. With one label there is little to propagate or to select on, so validation rejects most steps.`],
+    [`Post-training needs labels to work with`, `On top of the pre-trained model, the validation-gated stack adds ${D.budgets.map(b => `${signed((finalOf(D.posttrain[b]) - D.posttrain[b]["Pre-trained"].mean) * 100)} at ${blabel(b)}`).join(", ")} labels/area. With one label there is little to propagate or to select on, so validation rejects most steps.`],
     [`Raw confidences are not probabilities`, `Temperature scaling cuts expected calibration error from ${pct(cal.before.ece.mean)}% to ${pct(cal.after.ece.mean)}% (T = ${cal.temperature.mean.toFixed(2)}) without changing a single prediction.`],
     [`The graph can be distilled away`, `An MLP trained on labels alone reaches ${pct(dst.mlp_scratch.mean)}%. Distilled from the GNN pipeline, the same MLP reaches ${pct(dst.mlp_distilled.mean)}% and needs no edges at inference.`],
   ];
@@ -723,8 +726,8 @@ function render(data) {
   }
   const b0 = D.budgets[0], bp = D.budgets[D.budgets.length - 1], best = D.best_pretrain_method;
   const g0 = (D.finetune[b0][best].test.mean - D.finetune[b0].Scratch.test.mean) * 100;
-  const fin = Math.max(D.posttrain[bp]["+ Correct&Smooth"].mean, D.posttrain[bp]["Ensemble + C&S"].mean);
-  const fin0 = Math.max(D.posttrain[b0]["+ Correct&Smooth"].mean, D.posttrain[b0]["Ensemble + C&S"].mean);
+  const fin = finalOf(D.posttrain[bp]);
+  const fin0 = finalOf(D.posttrain[b0]);
   document.getElementById("hstats").innerHTML = [
     [`${pct(fin0)}%`, `test accuracy with ${blong(b0)} label${b0 === "1" ? "" : "s"} per area after the full stack (scratch ${pct(D.posttrain[b0].Scratch.mean)}%)`],
     [`${signed(g0)} pts`, `from ${best} pre-training alone at that budget`],
