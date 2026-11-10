@@ -528,7 +528,9 @@ def self_ensembling_self_training(states, norms, data, train_idx, seed, ft_seed_
     names = list(INITS)
     teacher, t_val, members, alphas = teacher_from_pool(pool, names, data, train_idx)
     best = {"probs": teacher, "val": t_val, "round": 0, "members": members}
-    trace = [{"round": 0, "val": t_val, "n_pseudo": 0, "pseudo_acc": None, "members": members}]
+    trace = [{"round": 0, "val": t_val, "test": acc(teacher, y, data.test_idx), "n_pseudo": 0,
+              "pseudo_acc": None, "members": members,
+              "pred": teacher.argmax(1).tolist(), "pseudo_idx": []}]
     for r in range(1, a.sest_rounds + 1):
         cal = calibrated(teacher, data)
         p_idx, p_y, p_w = select_pseudo(cal, data, train_idx, a.sest_per_class * r)
@@ -541,8 +543,10 @@ def self_ensembling_self_training(states, norms, data, train_idx, seed, ft_seed_
             pool.append(logp.exp())
             names.append(f"{init}@r{r}")
         teacher, t_val, members, alphas = teacher_from_pool(pool, names, data, train_idx)
-        trace.append({"round": r, "val": t_val, "n_pseudo": int(p_idx.numel()),
-                      "pseudo_acc": float((p_y == y[p_idx]).float().mean()), "members": members})
+        trace.append({"round": r, "val": t_val, "test": acc(teacher, y, data.test_idx),
+                      "n_pseudo": int(p_idx.numel()),
+                      "pseudo_acc": float((p_y == y[p_idx]).float().mean()), "members": members,
+                      "pred": teacher.argmax(1).tolist(), "pseudo_idx": p_idx.tolist()})
         if t_val > best["val"]:
             best = {"probs": teacher, "val": t_val, "round": r, "members": members}
     return best, trace
@@ -570,11 +574,23 @@ def temperature_scale(logp, data):
     return F.log_softmax(logp / t, 1), t
 
 
+def reliability_bins(probs, y, n_bins=10):
+    """Per confidence bin: [sum of confidence, number correct, count] (summable across seeds)."""
+    conf, pred = probs.max(1)
+    correct = (pred == y).float()
+    out = []
+    for i in range(n_bins):
+        lo, hi = i / n_bins, (i + 1) / n_bins
+        m = (conf > lo) & (conf <= hi) if i else (conf >= lo) & (conf <= hi)
+        out.append([float(conf[m].sum()), float(correct[m].sum()), int(m.sum())])
+    return out
+
+
 def calib_report(logp, data):
     ti, y = data.test_idx, data.y
     p = logp.exp()
     return {"ece": ece(p[ti], y[ti]), "nll": float(F.nll_loss(logp[ti].clamp_min(-30), y[ti])),
-            "acc": acc(p, y, ti)}
+            "acc": acc(p, y, ti), "bins": reliability_bins(p[ti], y[ti])}
 
 
 class MLP(nn.Module):
@@ -722,15 +738,16 @@ def _seed_pretrain_finetune(seed, a, pcfg, budgets):
 
 
 STAGES = ["Scratch", "Pre-trained", "+ Self-training", "+ Correct&Smooth",
-          "Ensemble (val-selected)", "Ensemble + C&S"]
+          "Ensemble (val-selected)", "Ensemble + C&S", "Self-ensembling self-training"]
 
 
-def seed_posttrain(seed, a, budgets, best_init, state, ft_seed):
+def seed_posttrain(seed, a, budgets, best_init, states, ft_seed):
     """Phase 3 for one seed: self-training, C&S, ensembling, calibration, distillation."""
     torch.set_num_threads(a.threads_per_worker)
     data = load_data()
     y = data.y
     norm = PRETRAINERS[best_init][1]
+    state = states[best_init]
     res = {}
     for b in budgets:
         bk = str(b)
@@ -750,18 +767,33 @@ def seed_posttrain(seed, a, budgets, best_init, state, ft_seed):
         ens_cs, _, _ = correct_and_smooth(ens.clamp_min(1e-9).log(), data, tr)
         r["Ensemble + C&S"] = acc(ens_cs, y, data.test_idx)
 
-        final_logp = cs_probs.log()
+        # Self-ensembling self-training: students start from the top-k pre-trained inits by val
+        norms = {"Scratch": False, **{m: PRETRAINERS[m][1] for m in METHODS}}
+        students = sorted(METHODS, key=lambda m: -ft_seed[bk][m]["val"])[: a.sest_students]
+        sest, sest_trace = self_ensembling_self_training(
+            states, norms, data, tr, seed, ft_seed[bk], students, a)
+        r["Self-ensembling self-training"] = acc(sest["probs"], y, data.test_idx)
+
+        final_logp = sest["probs"].clamp_min(1e-9).log()
         scaled, t = temperature_scale(final_logp, data)
         d, _ = distill(scaled.exp(), data, tr, seed, a)
+        viz = None
+        if seed == 0:
+            viz = {"train": tr.tolist(), "chosen_round": sest["round"],
+                   "rounds": [{"pred": tt["pred"], "pseudo": tt["pseudo_idx"]} for tt in sest_trace]}
+        for tt in sest_trace:
+            tt.pop("pred", None)
+            tt.pop("pseudo_idx", None)
         res[bk] = {"stages": r, "rounds": r_best, "trace": trace, "cs_alphas": alphas,
-                   "ensemble_members": members,
+                   "ensemble_members": members, "sest_round": sest["round"], "sest_trace": sest_trace,
+                   "sest_students": students, "sest_members": sest["members"], "viz": viz,
                    "calib": {"before": calib_report(final_logp, data),
                              "after": calib_report(scaled, data), "T": t},
                    "distill": {"mlp_scratch": d["mlp_scratch"], "mlp_distilled": d["mlp_distilled"],
-                               "teacher": r["+ Correct&Smooth"], "lambda": d["lambda"]}}
+                               "teacher": r["Self-ensembling self-training"], "lambda": d["lambda"]}}
         print(f"  [post-train] budget {bk:>6} seed {seed}: scratch {r['Scratch']:.3f} -> "
-              f"pre {r['Pre-trained']:.3f} -> ST(r={r_best}) {r['+ Self-training']:.3f} -> "
-              f"C&S{alphas} {r['+ Correct&Smooth']:.3f} | ens+C&S {r['Ensemble + C&S']:.3f} | "
+              f"pre {r['Pre-trained']:.3f} -> ens+C&S {r['Ensemble + C&S']:.3f} -> "
+              f"SEST(r={sest['round']}) {r['Self-ensembling self-training']:.3f} | "
               f"MLP {d['mlp_scratch']:.3f} -> distilled {d['mlp_distilled']:.3f}", flush=True)
     return res
 
@@ -793,6 +825,7 @@ def main():
     ap.add_argument("--st-per-class", type=int, default=40)
     ap.add_argument("--st-threshold", type=float, default=0.7)
     ap.add_argument("--sest-rounds", type=int, default=4, help="self-ensembling self-training rounds")
+    ap.add_argument("--sest-students", type=int, default=3, help="pre-trained inits used as students")
     ap.add_argument("--sest-per-class", type=int, default=50, help="pseudo-labels per class added per round")
     ap.add_argument("--sest-lambda", type=float, default=1.0, help="weight of the pseudo-label loss")
     ap.add_argument("--sest-consistency", type=float, default=0.0,
@@ -806,7 +839,7 @@ def main():
     a = ap.parse_args()
     if a.quick:
         a.seeds, a.budgets, a.ft_epochs, a.patience = 2, "3,public", 40, 20
-        a.pretrain_scale, a.st_rounds = 0.05, 1
+        a.pretrain_scale, a.st_rounds, a.sest_rounds = 0.05, 1, 1
     a.enc_lrs = [float(x) for x in str(a.enc_lrs).split(",")]
     a.workers = max(1, min(a.workers or a.seeds, a.seeds))
     a.threads_per_worker = max(1, (os.cpu_count() or 1) // a.workers)
@@ -844,10 +877,10 @@ def main():
     print("\n=== Phase 3: post-training ===", flush=True)
     post_seed = run_parallel(
         seed_posttrain,
-        [(s, a, budgets, best_init, per_seed[s]["states"][best_init], per_seed[s]["ft"])
+        [(s, a, budgets, best_init, per_seed[s]["states"], per_seed[s]["ft"])
          for s in range(a.seeds)], a.workers)
 
-    post, calib, distill_res, st_traces = {}, {}, {}, {}
+    post, calib, distill_res, st_traces, sest, viz = {}, {}, {}, {}, {}, {}
     for b in bks:
         rows = [p[b] for p in post_seed]
         post[b] = {k: mean_std([r["stages"][k] for r in rows]) for k in STAGES}
@@ -859,7 +892,24 @@ def main():
             "before": {k: mean_std([r["calib"]["before"][k] for r in rows]) for k in ["ece", "nll", "acc"]},
             "after": {k: mean_std([r["calib"]["after"][k] for r in rows]) for k in ["ece", "nll", "acc"]},
             "temperature": mean_std([r["calib"]["T"] for r in rows]),
+            "bins_before": np.sum([r["calib"]["before"]["bins"] for r in rows], axis=0).tolist(),
+            "bins_after": np.sum([r["calib"]["after"]["bins"] for r in rows], axis=0).tolist(),
         }
+        n_r = len(rows[0]["sest_trace"])
+        sest[b] = {
+            "rounds_chosen": [r["sest_round"] for r in rows],
+            "students": [r["sest_students"] for r in rows],
+            "members": [r["sest_members"] for r in rows],
+            "per_round": [{
+                "round": k,
+                "val": mean_std([r["sest_trace"][k]["val"] for r in rows]),
+                "test": mean_std([r["sest_trace"][k]["test"] for r in rows]),
+                "n_pseudo": int(np.mean([r["sest_trace"][k]["n_pseudo"] for r in rows])),
+                "pseudo_acc": (mean_std([r["sest_trace"][k]["pseudo_acc"] for r in rows]) if k else None),
+            } for k in range(n_r)],
+            "traces": [r["sest_trace"] for r in rows],
+        }
+        viz[b] = rows[0]["viz"]
         distill_res[b] = {k: mean_std([r["distill"][k] for r in rows])
                           for k in ["teacher", "mlp_scratch", "mlp_distilled"]}
 
@@ -880,6 +930,9 @@ def main():
         "finetune": ft_summary,
         "posttrain": post,
         "self_training_traces": st_traces,
+        "sest": sest,
+        "viz": {"seed": 0, "labels": data.y.tolist(), "test_idx": data.test_idx.tolist(),
+                "val_idx": data.val_idx.tolist(), "budgets": viz},
         "calibration": calib,
         "distillation": distill_res,
         "inference_speed": speed,
