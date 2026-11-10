@@ -431,10 +431,11 @@ def self_train(init_state, norm, data, train_idx, seed, enc_lr, base_logp, base_
 
 
 def correct_and_smooth(logp, data, train_idx):
-    """Correct&Smooth with alphas chosen on val. Returns probabilities."""
+    """Correct&Smooth with alphas chosen on val. "No C&S" is also a candidate, so
+    validation can reject the step. Returns (probs, val_acc, alphas or None)."""
     y = data.y
     probs = logp.exp()
-    best = (-1, None, None)
+    best = (acc(probs, y, data.val_idx), probs, None)
     for a1 in [0.5, 0.8, 1.0]:
         for a2 in [0.5, 0.8, 0.9]:
             cs = CorrectAndSmooth(num_correction_layers=50, correction_alpha=a1,
@@ -447,6 +448,28 @@ def correct_and_smooth(logp, data, train_idx):
             if va > best[0]:
                 best = (va, out, (a1, a2))
     return best[1], best[0], best[2]
+
+
+def greedy_ensemble(prob_list, names, data, max_size=12):
+    """Caruana-style forward selection with replacement on validation accuracy
+    (ties broken by validation NLL). Returns (probs, picked names)."""
+    y, vi = data.y, data.val_idx
+
+    def score(p):
+        return (acc(p, y, vi), -float(F.nll_loss(p[vi].clamp_min(1e-9).log(), y[vi])))
+
+    start = max(range(len(prob_list)), key=lambda i: score(prob_list[i]))
+    picked, total = [start], prob_list[start].clone()
+    best = score(total)
+    for _ in range(max_size - 1):
+        cand = max(range(len(prob_list)), key=lambda i: score((total + prob_list[i]) / (len(picked) + 1)))
+        new = score((total + prob_list[cand]) / (len(picked) + 1))
+        if new <= best:
+            break
+        picked.append(cand)
+        total = total + prob_list[cand]
+        best = new
+    return total / len(picked), [names[i] for i in picked]
 
 
 def ece(probs, y, n_bins=15):
@@ -462,19 +485,12 @@ def ece(probs, y, n_bins=15):
 
 
 def temperature_scale(logp, data):
-    """Fit a single temperature on val log-probs (works for logits or C&S output)."""
+    """Fit a single temperature by grid search on validation NLL. Deterministic and
+    stable, which LBFGS on a single scalar was not. Works for logits or log-probs."""
     vl, vy = logp[data.val_idx], data.y[data.val_idx]
-    log_t = torch.zeros(1, requires_grad=True)
-    opt = torch.optim.LBFGS([log_t], lr=0.1, max_iter=200)
-
-    def closure():
-        opt.zero_grad()
-        loss = F.cross_entropy(vl / log_t.exp(), vy)
-        loss.backward()
-        return loss
-
-    opt.step(closure)
-    t = float(log_t.exp())
+    grid = torch.exp(torch.linspace(math.log(0.05), math.log(20.0), 400))
+    nll = torch.stack([F.cross_entropy(vl / t, vy) for t in grid])
+    t = float(grid[int(nll.argmin())])
     return F.log_softmax(logp / t, 1), t
 
 
@@ -630,7 +646,7 @@ def _seed_pretrain_finetune(seed, a, pcfg, budgets):
 
 
 STAGES = ["Scratch", "Pre-trained", "+ Self-training", "+ Correct&Smooth",
-          "Ensemble (all inits)", "Ensemble + C&S"]
+          "Ensemble (val-selected)", "Ensemble + C&S"]
 
 
 def seed_posttrain(seed, a, budgets, best_init, state, ft_seed):
@@ -653,15 +669,16 @@ def seed_posttrain(seed, a, budgets, best_init, state, ft_seed):
         cs_probs, _, alphas = correct_and_smooth(st_logp, data, tr)
         r["+ Correct&Smooth"] = acc(cs_probs, y, data.test_idx)
 
-        ens = torch.stack([ft_seed[bk][i]["logp"].exp() for i in INITS]).mean(0)
-        r["Ensemble (all inits)"] = acc(ens, y, data.test_idx)
-        ens_cs, _, _ = correct_and_smooth(ens.log(), data, tr)
+        ens, members = greedy_ensemble([ft_seed[bk][i]["logp"].exp() for i in INITS], INITS, data)
+        r["Ensemble (val-selected)"] = acc(ens, y, data.test_idx)
+        ens_cs, _, _ = correct_and_smooth(ens.clamp_min(1e-9).log(), data, tr)
         r["Ensemble + C&S"] = acc(ens_cs, y, data.test_idx)
 
         final_logp = cs_probs.log()
         scaled, t = temperature_scale(final_logp, data)
         d, _ = distill(scaled.exp(), data, tr, seed, a)
         res[bk] = {"stages": r, "rounds": r_best, "trace": trace, "cs_alphas": alphas,
+                   "ensemble_members": members,
                    "calib": {"before": calib_report(final_logp, data),
                              "after": calib_report(scaled, data), "T": t},
                    "distill": {"mlp_scratch": d["mlp_scratch"], "mlp_distilled": d["mlp_distilled"],
@@ -754,7 +771,8 @@ def main():
         rows = [p[b] for p in post_seed]
         post[b] = {k: mean_std([r["stages"][k] for r in rows]) for k in STAGES}
         post[b]["self_training_rounds"] = [r["rounds"] for r in rows]
-        post[b]["cs_alphas"] = [list(r["cs_alphas"]) for r in rows]
+        post[b]["cs_alphas"] = [list(r["cs_alphas"]) if r["cs_alphas"] else None for r in rows]
+        post[b]["ensemble_members"] = [r["ensemble_members"] for r in rows]
         st_traces[b] = [r["trace"] for r in rows]
         calib[b] = {
             "before": {k: mean_std([r["calib"]["before"][k] for r in rows]) for k in ["ece", "nll", "acc"]},
@@ -825,8 +843,7 @@ def render_markdown(o):
     L.append(f"\nPost-training builds on **{o['best_pretrain_method']}** "
              "(chosen by mean validation accuracy).\n")
     L.append("## 3. Post-training stack\n")
-    stages = ["Scratch", "Pre-trained", "+ Self-training", "+ Correct&Smooth",
-              "Ensemble (all inits)", "Ensemble + C&S"]
+    stages = STAGES
     L.append("| Stage | " + " | ".join(budget_label(b) for b in o["budgets"]) + " |")
     L.append("|---|" + ":---:|" * len(o["budgets"]))
     for s in stages:

@@ -292,7 +292,7 @@ pre.cmd { margin: 0; background: var(--sheet); border: 1px solid var(--rule); bo
       <div class="sec-head">
         <div class="label">Stage 3 · post-training</div>
         <h2 id="h-post">What post-training adds on top</h2>
-        <p class="muted">The stack starts from the pre-trained init with the best validation score and adds one step at a time. Each bar shows how far that step moves test accuracy. The budget follows the slider above.</p>
+        <p class="muted">The stack starts from the pre-trained init with the best validation score and adds one step at a time. Validation can reject any step, so a step that does not help shows as a zero. The budget follows the slider above.</p>
       </div>
       <div class="sheet">
         <div class="row"><h3 id="wf-title">Accuracy waterfall</h3><div class="seg" id="wf-seg" role="group" aria-label="Label budget"></div></div>
@@ -451,9 +451,9 @@ const FT = [
 ];
 const POST = [
   ["Self-training", "≤3 rounds", "Add class-balanced pseudo-labels (up to 40·r per area, confidence ≥ 0.7) and retrain from the same init. Rounds are chosen on validation. Validation nodes are never pseudo-labelled."],
-  ["Correct & Smooth", "2 × 50 hops", "Spread the training nodes' residual errors over the graph, then smooth the corrected predictions with label propagation. Both α values are chosen on validation."],
-  ["Ensemble", "6 inits", "Average the fine-tuned predictions from all six inits, then apply Correct & Smooth."],
-  ["Temperature scaling", "1 param", "Fit one temperature on validation NLL. Reports test ECE and NLL. Accuracy does not change."],
+  ["Correct & Smooth", "2 × 50 hops", "Spread the training nodes' residual errors over the graph, then smooth the corrected predictions with label propagation. Both α values are chosen on validation, and skipping the step is also a candidate."],
+  ["Ensemble", "greedy on val", "Forward selection with replacement over the six fine-tuned inits: keep adding the model that most improves validation accuracy, then apply Correct & Smooth."],
+  ["Temperature scaling", "1 param", "Grid-search one temperature on validation NLL. Reports test ECE and NLL. Accuracy does not change."],
   ["Distillation", "MLP student", "Train a 2-layer MLP on λ·CE(labels) + (1−λ)·KL(teacher), with λ chosen on validation. At inference it needs node features only, no edges."],
 ];
 let D = null, sel = "DGI";
@@ -642,13 +642,15 @@ function waterfall() {
   el("rect", { x: x(4), y: y(fin.mean), width: bw, height: y(lo) - y(fin.mean), rx: 3, style: "fill:var(--accent)", "data-tip": `Single-model pipeline\n${ms(fin)} %` }, s);
   el("text", { x: x(4) + bw / 2, y: y(fin.mean) - 6, "text-anchor": "middle", class: "strong" }, s, pct(fin.mean));
   label(4, "Single model total");
-  el("rect", { x: x(5), y: y(ens.mean), width: bw, height: y(lo) - y(ens.mean), rx: 3, style: "fill:var(--i5)", "data-tip": `Ensemble of 6 inits + C&S\n${ms(ens)} %\n(ensemble alone ${ms(P["Ensemble (all inits)"])} %)` }, s);
+  el("rect", { x: x(5), y: y(ens.mean), width: bw, height: y(lo) - y(ens.mean), rx: 3, style: "fill:var(--i5)", "data-tip": `Val-selected ensemble + C&S\n${ms(ens)} %\n(ensemble alone ${ms(P["Ensemble (val-selected)"])} %)` }, s);
   el("text", { x: x(5) + bw / 2, y: y(ens.mean) - 6, "text-anchor": "middle", class: "strong" }, s, pct(ens.mean));
   label(5, "Ensemble + C&S");
   el("line", { x1: L + 4 * cw, x2: L + 4 * cw, y1: T, y2: H - B + 4, style: "stroke:var(--rule)" }, s);
   document.getElementById("wf-chart").replaceChildren(s);
   const rounds = P.self_training_rounds || [];
-  document.getElementById("wf-cap").textContent = `Mean test accuracy over ${D.config.seeds} seeds; hover a bar for ± std. Green and red bars are the change each step makes. Self-training rounds picked on validation, per seed: ${rounds.join(", ") || "n/a"} (0 means validation rejected pseudo-labels).`;
+  const csUsed = (P.cs_alphas || []).filter(Boolean).length;
+  const members = (P.ensemble_members || []).map(m => [...new Set(m)].join("+")).join(" · ");
+  document.getElementById("wf-cap").textContent = `Mean test accuracy over ${D.config.seeds} seeds; hover a bar for ± std. Green and red bars show the change each step makes. Every step can be rejected on validation. Self-training rounds kept per seed: ${rounds.join(", ") || "n/a"} (0 = rejected). Correct & Smooth kept on ${csUsed} of ${D.config.seeds} seeds. Ensemble members picked on validation, per seed: ${members || "n/a"}.`;
 }
 function calChart() {
   const bs = D.budgets, W = 460, rh = 36, L = 70, R = 70, T = 6, H = T + bs.length * rh + 28, s = svg(W, H, "Calibration error before and after temperature scaling");
