@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cora Pre-training Lab</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a dark specimen plate (the citation graph) opens the page, then a light lab notebook
+   walks the pipeline in order: structure -> pre-train -> label budget -> post-train -> findings. */
+:root {
+  --paper: #f3f4f7;
+  --sheet: #ffffff;
+  --ink: #14161f;
+  --ink-2: #565b70;
+  --ink-3: #8a8fa3;
+  --rule: #dcdfe8;
+  --grid: #eceef4;
+  --accent: #2846d9;
+  --accent-soft: #e4e8fc;
+  --good: #11875d;
+  --bad: #c93a3a;
+  --warn: #b7791f;
+  /* the specimen plate stays dark in both themes */
+  --plate: #0d0f17;
+  --plate-ink: #eef0f8;
+  --plate-ink-2: #9aa0b8;
+  --plate-edge: rgba(160, 170, 210, 0.16);
+  --plate-idle: #3a3f55;
+  /* research areas (Cora classes) */
+  --k0: #f59e0b; --k1: #22c55e; --k2: #6d8bff; --k3: #f472b6; --k4: #22d3ee; --k5: #a78bfa; --k6: #fb7185;
+  /* inits */
+  --i0: #8a8fa3; --i1: #2846d9; --i2: #11875d; --i3: #c27a12; --i4: #c0367d; --i5: #0e8aa6;
+  --f-display: "Bricolage Grotesque", "IBM Plex Sans", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --step--1: 0.84rem; --step-0: 1rem; --step-1: 1.25rem; --step-2: 1.7rem; --step-3: clamp(2.2rem, 5.4vw, 3.9rem);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f1118; --sheet: #161924; --ink: #e9ebf3; --ink-2: #a3a8bd; --ink-3: #6f7590; --rule: #2a2e3e; --grid: #1e2130;
+    --accent: #8ea2ff; --accent-soft: #232a4d; --good: #3ccf91; --bad: #f07373; --warn: #f0b44c;
+    --i0: #8a8fa3; --i1: #8ea2ff; --i2: #3ccf91; --i3: #f0b44c; --i4: #f17bb8; --i5: #3fc6e3;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f1118; --sheet: #161924; --ink: #e9ebf3; --ink-2: #a3a8bd; --ink-3: #6f7590; --rule: #2a2e3e; --grid: #1e2130;
+  --accent: #8ea2ff; --accent-soft: #232a4d; --good: #3ccf91; --bad: #f07373; --warn: #f0b44c;
+  --i0: #8a8fa3; --i1: #8ea2ff; --i2: #3ccf91; --i3: #f0b44c; --i4: #f17bb8; --i5: #3fc6e3;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 var(--step-0)/1.6 var(--f-body); }
+.band { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.inner { max-width: 1120px; margin: 0 auto; }
+h1, h2, h3 { font-family: var(--f-display); margin: 0; text-wrap: balance; letter-spacing: -0.02em; }
+h2 { font-size: var(--step-2); line-height: 1.15; font-weight: 700; }
+h3 { font-size: var(--step-1); font-weight: 700; letter-spacing: -0.01em; }
+p { margin: 0; max-width: 66ch; }
+.muted { color: var(--ink-2); }
+.small { font-size: var(--step--1); }
+.label { font: 500 0.72rem var(--f-mono); letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); }
+.num { font-variant-numeric: tabular-nums; }
+button { font: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Specimen plate (hero) ---------- */
+.plate { background: var(--plate); color: var(--plate-ink); padding-block: 48px 40px; }
+.plate .inner { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 32px; align-items: center; }
+.plate h1 { font-size: var(--step-3); line-height: 0.98; font-weight: 800; }
+.plate h1 em { font-style: normal; color: var(--k2); }
+.plate .lede { color: var(--plate-ink-2); margin-top: 18px; }
+.plate .label { color: var(--plate-ink-2); }
+.canvas-box { position: relative; aspect-ratio: 4 / 3; width: 100%; max-width: 100%; }
+#graph { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.plate-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 14px; font: 500 0.82rem var(--f-mono); color: var(--plate-ink-2); }
+.plate-bar b { color: var(--plate-ink); font-weight: 500; }
+.plate-btn { background: transparent; color: var(--plate-ink); border: 1px solid var(--plate-idle); border-radius: 6px; padding: 6px 12px; cursor: pointer; font: 500 0.8rem var(--f-mono); }
+.plate-btn:hover { border-color: var(--plate-ink-2); }
+.areas { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 22px; font-size: 0.8rem; color: var(--plate-ink-2); }
+.areas span { display: inline-flex; align-items: center; gap: 6px; }
+.areas i { width: 9px; height: 9px; border-radius: 50%; }
+.headline-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; margin-top: 28px; }
+.hs b { display: block; font: 700 1.9rem/1.05 var(--f-display); color: var(--plate-ink); font-variant-numeric: tabular-nums; }
+.hs span { font-size: 0.82rem; color: var(--plate-ink-2); }
+
+/* ---------- Notebook ---------- */
+main.band { padding-block: 56px 72px; }
+main .inner { display: grid; gap: 72px; }
+section { display: grid; gap: 20px; min-width: 0; }
+.sec-head { display: grid; gap: 10px; }
+.sheet { background: var(--sheet); border: 1px solid var(--rule); border-radius: 12px; padding: 20px; min-width: 0; display: grid; gap: 14px; align-content: start; }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.wide-left { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+.banner { border: 1px solid var(--warn); background: var(--sheet); color: var(--ink); border-radius: 8px; padding: 10px 14px; font-size: var(--step--1); max-width: none; }
+
+/* Pipeline */
+.flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; position: relative; }
+.col { padding: 18px; display: grid; gap: 12px; align-content: start; border-left: 1px solid var(--rule); }
+.col:first-child { border-left: 0; }
+.col .label { display: flex; justify-content: space-between; }
+.node {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: var(--paper); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; cursor: pointer; font-size: 0.9rem; font-weight: 500;
+}
+.node:hover { border-color: var(--ink-3); }
+.node[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.node i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.node small { margin-left: auto; font: 400 0.74rem var(--f-mono); color: var(--ink-3); }
+.flowline { height: 2px; background: repeating-linear-gradient(90deg, var(--accent) 0 8px, transparent 8px 14px); background-size: 28px 2px; opacity: 0.6; }
+@media (prefers-reduced-motion: no-preference) { .flowline { animation: march 1.2s linear infinite; } }
+@keyframes march { to { background-position: 28px 0; } }
+.drawer { border-top: 1px solid var(--rule); padding: 18px; display: grid; gap: 10px; }
+.drawer dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: 0.88rem; }
+.drawer dt { color: var(--ink-3); font-family: var(--f-mono); font-size: 0.78rem; padding-top: 2px; }
+.drawer dd { margin: 0; overflow-wrap: anywhere; }
+.drawer dd.mono { font-family: var(--f-mono); font-size: 0.8rem; }
+.pill { display: inline-block; font: 500 0.72rem var(--f-mono); padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.pill.bad { color: var(--bad); } .pill.good { color: var(--good); } .pill.warn { color: var(--warn); }
+
+/* Charts */
+.chart { width: 100%; overflow-x: auto; }
+.chart svg { display: block; width: 100%; height: auto; min-width: 420px; }
+.chart svg text { font-family: var(--f-mono); font-size: 11px; fill: var(--ink-3); }
+.chart svg .lbl { fill: var(--ink); font-size: 12px; }
+.chart svg .strong { fill: var(--ink); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.8rem; color: var(--ink-2); align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 3px; border-radius: 2px; }
+.cap { font-size: var(--step--1); color: var(--ink-2); max-width: 70ch; }
+.multiples { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.mult { display: grid; gap: 4px; }
+.mult svg { width: 100%; height: auto; display: block; }
+.mult .label { display: flex; justify-content: space-between; color: var(--ink-2); }
+
+/* Budget slider centerpiece */
+.budget { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 24px; }
+.slider-wrap { display: grid; gap: 8px; }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+.ticks { display: flex; justify-content: space-between; font: 500 0.75rem var(--f-mono); color: var(--ink-3); }
+.ticks button { background: none; border: 0; color: inherit; cursor: pointer; padding: 2px 4px; font: inherit; }
+.ticks button[aria-pressed="true"] { color: var(--accent); }
+.bignum { font: 800 3.4rem/1 var(--f-display); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.bignum small { font: 500 1rem var(--f-mono); color: var(--ink-2); letter-spacing: 0; }
+.rank { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.rank li { display: grid; grid-template-columns: 82px minmax(0, 1fr) 96px; gap: 10px; align-items: center; font-size: 0.86rem; }
+.rank .track { height: 12px; background: var(--grid); border-radius: 3px; overflow: hidden; }
+.rank .fill { height: 100%; border-radius: 3px; }
+@media (prefers-reduced-motion: no-preference) { .rank .fill { transition: width 0.35s ease; } }
+.rank .v { text-align: right; font-family: var(--f-mono); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.delta-up { color: var(--good); } .delta-down { color: var(--bad); }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; flex-wrap: wrap; }
+.seg button { background: var(--sheet); color: var(--ink-2); border: 0; padding: 6px 11px; cursor: pointer; font: 500 0.8rem var(--f-mono); }
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
+.row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font: 500 0.7rem var(--f-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); }
+td.best { font-weight: 600; color: var(--accent); }
+.tbl { overflow-x: auto; }
+details summary { cursor: pointer; font: 500 0.82rem var(--f-mono); color: var(--ink-2); }
+
+.findings { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
+.findings li { border-top: 2px solid var(--ink); padding-top: 12px; display: grid; gap: 6px; align-content: start; }
+.findings b { font: 700 1.05rem/1.3 var(--f-display); }
+.findings p { font-size: 0.9rem; color: var(--ink-2); }
+pre.cmd { margin: 0; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; overflow-x: auto; font: 0.84rem/1.7 var(--f-mono); }
+.status { font: 0.85rem var(--f-mono); color: var(--plate-ink-2); }
+
+#tip {
+  position: fixed; pointer-events: none; z-index: 20; background: var(--ink); color: var(--paper); font: 0.78rem/1.45 var(--f-mono);
+  padding: 7px 10px; border-radius: 6px; max-width: 260px; white-space: pre-line;
+}
+
+@media (max-width: 860px) {
+  .plate .inner, .two, .wide-left, .budget { grid-template-columns: minmax(0, 1fr); }
+  .flow { grid-template-columns: minmax(0, 1fr); }
+  .col { border-left: 0; border-top: 1px solid var(--rule); }
+  .col:first-child { border-top: 0; }
+  .bignum { font-size: 2.7rem; }
+}
+</style>
+
+<div id="tip" hidden></div>
+
+<header class="plate band">
+  <div class="inner">
+    <div>
+      <div class="label">Cora citation network · self-supervised GNNs</div>
+      <h1 style="margin-top:14px">Seven labels.<br><em>2,708 papers.</em></h1>
+      <p class="lede">What can a graph neural network learn about seven research areas when it gets one labelled paper per area? This lab pre-trains five label-free objectives on the citation graph, fine-tunes them with 1 to 20 labels per class, and then stacks post-training on top. Hyperparameters are chosen on the validation nodes, and the test nodes are only scored.</p>
+      <div class="headline-stats" id="hstats"><div class="status" id="status">Loading results…</div></div>
+    </div>
+    <div>
+      <div class="canvas-box"><canvas id="graph" aria-label="Citation subgraph with labels spreading from one paper per research area"></canvas></div>
+      <div class="plate-bar">
+        <button class="plate-btn" id="replay" type="button">Replay</button>
+        <span>hop <b id="hop">0</b></span>
+        <span>reached <b id="reached">7</b> / <b id="total">—</b></span>
+        <span>nearest-label rule correct <b id="lpacc">—</b></span>
+      </div>
+      <p class="small" style="color:var(--plate-ink-2);margin-top:8px">Each area's most-cited paper is labelled (ringed). Labels then spread one citation per tick: filled dots got the right area, hollow dots got the wrong one.</p>
+      <div class="areas" id="areas"></div>
+    </div>
+  </div>
+</header>
+
+<main class="band">
+  <div class="inner">
+    <section aria-labelledby="h-pipe">
+      <div class="sec-head">
+        <div class="label">The structure</div>
+        <h2 id="h-pipe">One encoder, three stages</h2>
+        <p class="muted">Every model here is the same 2-layer GCN (1433 → 256 → 256, PReLU). Only the way it is trained changes. Select any block to see what it does and how it scored.</p>
+      </div>
+      <div class="sheet" style="padding:0;gap:0">
+        <div class="flow">
+          <div class="col">
+            <div class="label"><span>Stage 1 · no labels</span><span>pre-train</span></div>
+            <div id="col-pre" style="display:grid;gap:6px"></div>
+          </div>
+          <div class="col">
+            <div class="label"><span>Stage 2 · few labels</span><span>fine-tune</span></div>
+            <div id="col-ft" style="display:grid;gap:6px"></div>
+          </div>
+          <div class="col">
+            <div class="label"><span>Stage 3 · after training</span><span>post-train</span></div>
+            <div id="col-post" style="display:grid;gap:6px"></div>
+          </div>
+        </div>
+        <div class="flowline" aria-hidden="true"></div>
+        <div class="drawer" id="drawer" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-pre">
+      <div class="sec-head">
+        <div class="label">Stage 1 · pre-training</div>
+        <h2 id="h-pre">What the encoder learns before it sees a label</h2>
+        <p class="muted">Each encoder is frozen and scored two ways: a logistic-regression probe on the 140 public training labels, and k-means against the true areas (NMI). The grey reference is the same GCN with random weights, a strong baseline on Cora because propagation alone already smooths features over neighbours.</p>
+      </div>
+      <div class="two wide-left">
+        <div class="sheet">
+          <div class="row"><h3>Frozen-encoder quality</h3><div class="seg" id="probe-metric" role="group" aria-label="Metric"></div></div>
+          <div class="chart" id="probe-chart"></div>
+        </div>
+        <div class="sheet">
+          <h3>Pre-training loss, seed 0</h3>
+          <div class="multiples" id="loss-mult"></div>
+          <p class="cap">Each panel has its own y-scale, because the objectives use different units.</p>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-budget">
+      <div class="sec-head">
+        <div class="label">Stage 2 · fine-tuning</div>
+        <h2 id="h-budget">Slide the label budget and see when pre-training pays off</h2>
+        <p class="muted">Labelled nodes are drawn from outside the validation and test sets, with a fresh draw per seed. For each init the encoder learning rate (frozen, 1e-3 or 1e-2) is chosen on validation.</p>
+      </div>
+      <div class="sheet">
+        <div class="budget">
+          <div style="display:grid;gap:18px;align-content:start">
+            <div class="slider-wrap">
+              <label class="label" for="bslider">Labelled papers per research area</label>
+              <input type="range" id="bslider" min="0" max="4" step="1" value="0">
+              <div class="ticks" id="bticks"></div>
+            </div>
+            <div>
+              <div class="bignum" id="bbig">—</div>
+              <div class="small muted" id="bbig-cap"></div>
+            </div>
+            <ul class="rank" id="brank"></ul>
+          </div>
+          <div style="display:grid;gap:10px;align-content:start;min-width:0">
+            <div class="chart" id="ft-chart"></div>
+            <div class="legend" id="ft-legend"></div>
+          </div>
+        </div>
+      </div>
+      <details class="sheet">
+        <summary>Full fine-tuning table (test accuracy %, mean ± std over seeds)</summary>
+        <div class="tbl" id="ft-table"></div>
+      </details>
+    </section>
+
+    <section aria-labelledby="h-post">
+      <div class="sec-head">
+        <div class="label">Stage 3 · post-training</div>
+        <h2 id="h-post">What post-training adds on top</h2>
+        <p class="muted">The stack starts from the pre-trained init with the best validation score and adds one step at a time. Validation can reject any step, so a step that does not help shows as a zero. The budget follows the slider above.</p>
+        <p><a href="posttrain.html" style="color:var(--accent);font-weight:600">See the post-training deep dive: self-ensembling self-training, round by round →</a></p>
+      </div>
+      <div class="sheet">
+        <div class="row"><h3 id="wf-title">Accuracy waterfall</h3><div class="seg" id="wf-seg" role="group" aria-label="Label budget"></div></div>
+        <div class="chart" id="wf-chart"></div>
+        <p class="cap" id="wf-cap"></p>
+      </div>
+      <div class="two">
+        <div class="sheet">
+          <h3>Calibration</h3>
+          <div class="chart" id="cal-chart"></div>
+          <p class="cap">Expected calibration error (15 bins) of the final single-model pipeline, before and after one temperature fitted on validation. Temperature leaves the argmax, and so accuracy, unchanged.</p>
+        </div>
+        <div class="sheet">
+          <h3>Distillation into a graph-free MLP</h3>
+          <div class="chart" id="dist-chart"></div>
+          <p class="cap" id="dist-cap"></p>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-find">
+      <div class="sec-head">
+        <div class="label">Read-out</div>
+        <h2 id="h-find">Findings</h2>
+      </div>
+      <ul class="findings" id="findings"></ul>
+    </section>
+
+    <section aria-labelledby="h-run">
+      <div class="sec-head">
+        <div class="label">Reproduce</div>
+        <h2 id="h-run">Run it yourself</h2>
+      </div>
+      <pre class="cmd">pip install -r requirements.txt
+python3 pretrain_posttrain.py            # 5 seeds × budgets 1,3,5,10,20 → docs/pretrain_posttrain.json
+python3 pretrain_posttrain.py --quick    # smoke test, a few minutes on CPU
+python3 tools/export_graph_layout.py     # refresh the graph drawn at the top of this page</pre>
+      <p class="cap" id="run-meta"></p>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+const AREAS = ["Case Based", "Genetic Algorithms", "Neural Networks", "Probabilistic Methods", "Reinforcement Learning", "Rule Learning", "Theory"];
+const INIT_VAR = { Scratch: "--i0", DGI: "--i1", GRACE: "--i2", BGRL: "--i3", GraphMAE: "--i4", GAE: "--i5" };
+const icol = k => `var(${INIT_VAR[k] || "--accent"})`;
+const pct = v => (v * 100).toFixed(1);
+const blabel = b => b === "public" ? "20" : b;
+const blong = b => b === "public" ? "20 (public split)" : `${b}`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ms = (o, d = 1, k = 100) => `${(o.mean * k).toFixed(d)} ± ${(o.std * k).toFixed(d)}`;
+const SEST = "Self-ensembling self-training";
+const finalOf = P => Math.max(...["+ Correct&Smooth", "Ensemble + C&S", SEST].filter(k => P[k]).map(k => P[k].mean));
+const signed = (v, d = 1) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(d)}`;
+
+function svg(w, h, label) { const s = document.createElementNS(NS, "svg"); s.setAttribute("viewBox", `0 0 ${w} ${h}`); s.setAttribute("role", "img"); if (label) s.setAttribute("aria-label", label); return s; }
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text != null) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function ticks(lo, hi, n = 5) {
+  const span = hi - lo, mag = Math.pow(10, Math.floor(Math.log10(span / n)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => span / s <= n) || mag * 10;
+  const t = []; for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9; v += step) t.push(+v.toFixed(6));
+  return t;
+}
+
+/* ---------- tooltip ---------- */
+const tip = document.getElementById("tip");
+document.addEventListener("pointermove", e => {
+  const t = e.target.closest && e.target.closest("[data-tip]");
+  if (!t) { tip.hidden = true; return; }
+  tip.textContent = t.getAttribute("data-tip"); tip.hidden = false;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, e.clientX + 14)) + "px";
+  tip.style.top = Math.max(8, e.clientY - h - 12) + "px";
+});
+
+/* ---------- hero: label spreading on the real citation subgraph ---------- */
+const Hero = (() => {
+  const canvas = document.getElementById("graph"), ctx = canvas.getContext("2d");
+  let G = null, owner = [], hopOf = [], hop = 0, maxHop = 0, timer = null, colors = [];
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function readColors() { const cs = getComputedStyle(document.documentElement); colors = AREAS.map((_, i) => cs.getPropertyValue(`--k${i}`).trim()); return cs; }
+  function setup(data) {
+    G = data; const n = G.nodes.length, adj = Array.from({ length: n }, () => []);
+    for (const [u, v] of G.edges) { adj[u].push(v); adj[v].push(u); }
+    // one labelled paper per area: the most-cited paper of that area in this subgraph
+    const seeds = AREAS.map((_, c) => G.nodes.map((nd, i) => [nd[3], i, nd[2]]).filter(r => r[2] === c).sort((a, b) => b[0] - a[0])[0]?.[1]).filter(i => i != null);
+    owner = new Array(n).fill(-1); hopOf = new Array(n).fill(Infinity);
+    let frontier = seeds.slice(); seeds.forEach(s => { owner[s] = G.nodes[s][2]; hopOf[s] = 0; });
+    let h = 0;
+    while (frontier.length) {
+      h++; const next = [];
+      for (const u of frontier) for (const v of adj[u]) if (owner[v] < 0) { owner[v] = owner[u]; hopOf[v] = h; next.push(v); }
+      frontier = next;
+    }
+    maxHop = h - 1; G.seeds = new Set(seeds);
+    document.getElementById("total").textContent = n;
+    document.getElementById("areas").innerHTML = AREAS.map((a, i) => `<span><i style="background:var(--k${i})"></i>${esc(a)}</span>`).join("");
+  }
+  function draw() {
+    if (!G) return;
+    const cs = readColors(), dpr = window.devicePixelRatio || 1, r = canvas.getBoundingClientRect();
+    if (!r.width) return;
+    canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, r.width, r.height);
+    const pad = 14, X = x => pad + x * (r.width - 2 * pad), Y = y => pad + y * (r.height - 2 * pad);
+    ctx.lineWidth = 0.7;
+    const idleEdge = cs.getPropertyValue("--plate-edge"), idle = cs.getPropertyValue("--plate-idle"), ink = cs.getPropertyValue("--plate-ink");
+    for (const [u, v] of G.edges) {
+      const a = G.nodes[u], b = G.nodes[v], lit = hopOf[u] <= hop && hopOf[v] <= hop;
+      ctx.strokeStyle = lit ? colors[owner[u]] + "55" : idleEdge;
+      ctx.beginPath(); ctx.moveTo(X(a[0]), Y(a[1])); ctx.lineTo(X(b[0]), Y(b[1])); ctx.stroke();
+    }
+    let reached = 0, correct = 0;
+    G.nodes.forEach((nd, i) => {
+      const rad = 1.6 + Math.sqrt(nd[3]) * 0.55, on = hopOf[i] <= hop, seed = G.seeds.has(i);
+      ctx.beginPath(); ctx.arc(X(nd[0]), Y(nd[1]), seed ? rad + 3 : rad, 0, Math.PI * 2);
+      if (!on) { ctx.fillStyle = idle; ctx.fill(); return; }
+      reached++; const ok = owner[i] === nd[2]; if (ok) correct++;
+      if (ok || seed) { ctx.fillStyle = colors[owner[i]]; ctx.fill(); }
+      else { ctx.strokeStyle = colors[owner[i]]; ctx.lineWidth = 1.3; ctx.stroke(); ctx.lineWidth = 0.7; }
+      if (seed) { ctx.strokeStyle = ink; ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 0.7; }
+    });
+    document.getElementById("hop").textContent = hop;
+    document.getElementById("reached").textContent = reached;
+    const k = G.seeds.size;
+    document.getElementById("lpacc").textContent = reached > k ? `${((correct - k) / (reached - k) * 100).toFixed(0)}%` : "—";
+  }
+  function play() {
+    clearInterval(timer); hop = reduce ? maxHop : 0; draw();
+    if (reduce) return;
+    timer = setInterval(() => { hop++; draw(); if (hop >= maxHop) clearInterval(timer); }, 650);
+  }
+  new ResizeObserver(draw).observe(canvas);
+  document.getElementById("replay").onclick = play;
+  return { start(data) { setup(data); play(); } };
+})();
+
+/* ---------- pipeline structure ---------- */
+const METHOD = {
+  DGI: ["Deep Graph Infomax", "Tell real node embeddings apart from embeddings of a graph whose features were shuffled, using a bilinear critic against a global summary vector.", "Feature-row shuffling as corruption"],
+  GRACE: ["Graph contrastive learning", "Two randomly perturbed views. Each node must pick out its own counterpart in the other view among all 2N candidates (NT-Xent).", "Edge dropping + feature-column masking"],
+  BGRL: ["Bootstrapped graph latents", "An online encoder plus predictor regresses an EMA target encoder's embedding of the other view. Needs no negatives.", "Edge dropping + feature masking; EMA 0.99 → 1"],
+  GraphMAE: ["Masked graph autoencoder", "Replace node features with a learned [MASK] token, encode, re-mask, then decode and reconstruct the masked features (scaled cosine error).", "Random node masking"],
+  GAE: ["Graph autoencoder", "Reconstruct edges: inner products of embeddings should score real citations above randomly sampled non-edges.", "Negative sampling each epoch"],
+};
+const FT = [
+  ["Label budgets", "1 · 3 · 5 · 10 · 20", "Fine-tune with 1, 3, 5 or 10 labelled papers per area, or with the public 20-per-area split. Validation (500) and test (1000) are the fixed public nodes."],
+  ["Six starting points", "6 inits", "Random weights (Scratch) or one of the five pre-trained encoders. All share the same architecture."],
+  ["LR chosen on val", "{0, 1e-3, 1e-2}", "The encoder learning rate is picked on validation: 0 keeps the pre-trained encoder frozen. The head uses 1e-2, with dropout 0.5 and early stopping on validation accuracy."],
+];
+const POST = [
+  ["Self-training", "≤3 rounds", "Add class-balanced pseudo-labels (up to 40·r per area, confidence ≥ 0.7) and retrain from the same init. Rounds are chosen on validation. Validation nodes are never pseudo-labelled."],
+  ["Correct & Smooth", "2 × 50 hops", "Spread the training nodes' residual errors over the graph, then smooth the corrected predictions with label propagation. Both α values are chosen on validation, and skipping the step is also a candidate."],
+  ["Ensemble", "greedy on val", "Forward selection with replacement over the six fine-tuned inits: keep adding the model that most improves validation accuracy, then apply Correct & Smooth."],
+  ["Temperature scaling", "1 param", "Grid-search one temperature on validation NLL. Reports test ECE and NLL. Accuracy does not change."],
+  ["Distillation", "MLP student", "Train a 2-layer MLP on λ·CE(labels) + (1−λ)·KL(teacher), with λ chosen on validation. At inference it needs node features only, no edges."],
+];
+let D = null, sel = "DGI";
+function nodeBtn(key, name, meta, color) {
+  return `<button class="node" type="button" data-k="${esc(key)}" aria-pressed="false">${color ? `<i style="background:${color}"></i>` : ""}${esc(name)}<small>${esc(meta)}</small></button>`;
+}
+function buildFlow() {
+  const probe = m => D ? pct(D.pretrain[m].linear_probe.mean) + "%" : "";
+  document.getElementById("col-pre").innerHTML = Object.keys(METHOD).map(m => nodeBtn(m, m, probe(m), icol(m))).join("");
+  document.getElementById("col-ft").innerHTML = FT.map(([n, m]) => nodeBtn(n, n, m)).join("");
+  document.getElementById("col-post").innerHTML = POST.map(([n, m]) => nodeBtn(n, n, m)).join("");
+  document.querySelectorAll(".node[data-k]").forEach(b => b.onclick = () => { sel = b.dataset.k; drawer(); });
+  drawer();
+}
+function healthPill(m) {
+  if (!D) return "";
+  const p = D.pretrain[m], base = D.pretrain.Scratch;
+  if (p.nmi.mean < 0.05 || p.linear_probe.mean < base.linear_probe.mean) return `<span class="pill bad">below random-init baseline</span>`;
+  if (p.linear_probe.mean - base.linear_probe.mean > 0.05) return `<span class="pill good">+${pct(p.linear_probe.mean - base.linear_probe.mean)} pts over random init</span>`;
+  return `<span class="pill warn">small gain over random init</span>`;
+}
+function drawer() {
+  document.querySelectorAll(".node[data-k]").forEach(b => b.setAttribute("aria-pressed", b.dataset.k === sel));
+  const box = document.getElementById("drawer");
+  if (METHOD[sel]) {
+    const [name, obj, aug] = METHOD[sel], cfg = D ? D.pretrain_config[sel] : null, p = D ? D.pretrain[sel] : null;
+    box.innerHTML = `<div class="row"><h3>${esc(sel)} <span class="muted" style="font-weight:500">· ${esc(name)}</span></h3>${healthPill(sel)}</div>
+      <p>${esc(obj)}</p>
+      <dl><dt>views</dt><dd>${esc(aug)}</dd>
+      ${cfg ? `<dt>config</dt><dd class="mono">${esc(Object.entries(cfg).map(([k, v]) => `${k}=${v}`).join("  "))}</dd>` : ""}
+      ${p ? `<dt>linear probe</dt><dd class="mono">${ms(p.linear_probe)} %</dd><dt>k-means NMI</dt><dd class="mono">${ms(p.nmi, 3, 1)}</dd><dt>time / seed</dt><dd class="mono">${p.time_s.toFixed(0)} s (CPU)</dd>` : ""}</dl>`;
+  } else {
+    const [n, m, d] = [...FT, ...POST].find(r => r[0] === sel);
+    box.innerHTML = `<div class="row"><h3>${esc(n)}</h3><span class="pill" style="color:var(--ink-3)">${esc(m)}</span></div><p>${esc(d)}</p>`;
+  }
+}
+
+/* ---------- stage 1 ---------- */
+let probeMetric = "linear_probe";
+function probeChart() {
+  const seg = document.getElementById("probe-metric");
+  seg.innerHTML = [["linear_probe", "linear probe"], ["nmi", "k-means NMI"]].map(([k, n]) => `<button type="button" data-k="${k}" aria-pressed="${k === probeMetric}">${n}</button>`).join("");
+  seg.querySelectorAll("button").forEach(b => b.onclick = () => { probeMetric = b.dataset.k; probeChart(); });
+  const isPct = probeMetric === "linear_probe";
+  const rows = D.inits.map(m => ({ m, v: D.pretrain[m][probeMetric].mean, sd: D.pretrain[m][probeMetric].std }));
+  const lo = isPct ? Math.max(0, Math.floor((Math.min(...rows.map(r => r.v - r.sd)) - 0.04) * 10) / 10) : 0;
+  const hi = isPct ? Math.min(1, Math.ceil((Math.max(...rows.map(r => r.v + r.sd)) + 0.02) * 20) / 20) : Math.max(0.1, Math.ceil(Math.max(...rows.map(r => r.v + r.sd)) * 10) / 10);
+  const W = 560, rh = 34, L = 104, R = 74, T = 6, H = T + rows.length * rh + 24, s = svg(W, H, "Frozen encoder quality by method");
+  const x = v => L + (v - lo) / (hi - lo) * (W - L - R);
+  for (const t of ticks(lo, hi, 5)) {
+    el("line", { x1: x(t), x2: x(t), y1: T, y2: H - 20, style: "stroke:var(--grid)" }, s);
+    el("text", { x: x(t), y: H - 5, "text-anchor": "middle" }, s, isPct ? Math.round(t * 100) + "%" : t.toFixed(1));
+  }
+  const base = rows[0].v;
+  rows.forEach((r, i) => {
+    const y = T + i * rh, bad = r.m !== "Scratch" && r.v < base;
+    el("text", { x: L - 10, y: y + rh / 2 + 4, "text-anchor": "end", class: "lbl" }, s, r.m === "Scratch" ? "Random init" : r.m);
+    el("rect", { x: x(lo), y: y + 7, width: Math.max(0, x(r.v) - x(lo)), height: rh - 14, rx: 3, style: `fill:${icol(r.m)};opacity:${bad ? 0.45 : 0.95}`,
+      "data-tip": `${r.m}\n${isPct ? "linear probe" : "NMI"} ${isPct ? pct(r.v) + "%" : r.v.toFixed(3)} ± ${isPct ? pct(r.sd) : r.sd.toFixed(3)}` }, s);
+    el("line", { x1: x(Math.max(lo, r.v - r.sd)), x2: x(Math.min(hi, r.v + r.sd)), y1: y + rh / 2, y2: y + rh / 2, style: "stroke:var(--ink);stroke-width:1.4" }, s);
+    el("text", { x: x(Math.min(hi, r.v + r.sd)) + 6, y: y + rh / 2 + 4, class: "strong" }, s, isPct ? pct(r.v) : r.v.toFixed(3));
+  });
+  el("line", { x1: x(base), x2: x(base), y1: T, y2: H - 20, style: "stroke:var(--ink-3);stroke-dasharray:3 3" }, s);
+  document.getElementById("probe-chart").replaceChildren(s);
+}
+function lossMultiples() {
+  const box = document.getElementById("loss-mult"); box.innerHTML = "";
+  for (const m of D.inits.filter(m => m !== "Scratch")) {
+    const c = D.pretrain[m].loss_curve; if (!c || c.length < 2) continue;
+    const lo = Math.min(...c), hi = Math.max(...c), span = hi - lo || 1, W = 160, H = 64;
+    const div = document.createElement("div"); div.className = "mult";
+    div.innerHTML = `<div class="label"><span>${esc(m)}</span><span class="num">${c[c.length - 1].toFixed(3)}</span></div>`;
+    const s = svg(W, H, `${m} loss curve`), pts = c.map((v, i) => [i / (c.length - 1) * (W - 4), 4 + (1 - (v - lo) / span) * (H - 8)]);
+    el("polygon", { points: `0,${H} ` + pts.map(p => p.join(",")).join(" ") + ` ${W - 4},${H}`, style: `fill:${icol(m)};opacity:0.12` }, s);
+    el("polyline", { points: pts.map(p => p.join(",")).join(" "), style: `fill:none;stroke:${icol(m)};stroke-width:1.6` }, s);
+    const e = pts[pts.length - 1]; el("circle", { cx: e[0], cy: e[1], r: 2.5, style: `fill:${icol(m)}` }, s);
+    div.appendChild(s); box.appendChild(div);
+  }
+}
+
+/* ---------- stage 2: budget slider ---------- */
+let bi = 0, focus = null;
+function setBudget(i) { bi = i; document.getElementById("bslider").value = i; budgetView(); waterfall(); }
+function budgetView() {
+  const b = D.budgets[bi], F = D.finetune[b], scratch = F.Scratch.test.mean;
+  document.querySelectorAll("#bticks button").forEach((t, i) => t.setAttribute("aria-pressed", i === bi));
+  const best = D.inits.filter(i => i !== "Scratch").reduce((a, c) => F[c].test.mean > F[a].test.mean ? c : a);
+  const gain = (F[best].test.mean - scratch) * 100;
+  const big = document.getElementById("bbig");
+  big.innerHTML = `${signed(gain)}<small> pts</small>`;
+  big.style.color = gain >= 0 ? "var(--good)" : "var(--bad)";
+  document.getElementById("bbig-cap").textContent = `best pre-trained init (${best}) vs training from scratch, with ${blong(b)} label${b === "1" ? "" : "s"} per area`;
+  const order = D.inits.slice().sort((a, c) => F[c].test.mean - F[a].test.mean);
+  const lo = 0.3, hi = 0.9;
+  document.getElementById("brank").innerHTML = order.map(i => {
+    const v = F[i].test.mean, d = (v - scratch) * 100;
+    return `<li data-tip="${esc(`${i}\ntest ${ms(F[i].test)} %\nval ${ms(F[i].val)} %\nencoder LR per seed: ${F[i].enc_lr.join(", ")}`)}">
+      <span style="font-weight:${i === "Scratch" ? 400 : 500}">${esc(i)}</span>
+      <span class="track"><span class="fill" style="display:block;width:${Math.max(0, Math.min(1, (v - lo) / (hi - lo))) * 100}%;background:${icol(i)}"></span></span>
+      <span class="v">${pct(v)}${i === "Scratch" ? "" : ` <span class="${d >= 0 ? "delta-up" : "delta-down"}">${signed(d)}</span>`}</span></li>`;
+  }).join("");
+  ftChart();
+}
+function ftChart() {
+  const bs = D.budgets, W = 620, H = 330, L = 44, R = 84, T = 14, B = 42, s = svg(W, H, "Test accuracy versus labels per class");
+  const all = bs.flatMap(b => D.inits.flatMap(i => [D.finetune[b][i].test.mean - D.finetune[b][i].test.std, D.finetune[b][i].test.mean + D.finetune[b][i].test.std]));
+  const lo = Math.max(0, Math.floor(Math.min(...all) * 20) / 20), hi = Math.min(1, Math.ceil(Math.max(...all) * 20) / 20);
+  const x = i => L + (bs.length === 1 ? 0.5 : i / (bs.length - 1)) * (W - L - R), y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  for (const t of ticks(lo, hi, 6)) {
+    el("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), style: "stroke:var(--grid)" }, s);
+    el("text", { x: L - 8, y: y(t) + 4, "text-anchor": "end" }, s, Math.round(t * 100) + "%");
+  }
+  el("rect", { x: x(bi) - 16, y: T, width: 32, height: H - T - B, rx: 6, style: "fill:var(--accent-soft)" }, s);
+  bs.forEach((b, i) => {
+    const t = el("text", { x: x(i), y: H - 22, "text-anchor": "middle", style: `cursor:pointer;${i === bi ? "fill:var(--accent);font-weight:600" : ""}` }, s, blabel(b));
+    t.addEventListener("click", () => setBudget(i));
+  });
+  el("text", { x: (L + W - R) / 2, y: H - 4, "text-anchor": "middle" }, s, "labelled papers per area (budgets evenly spaced)");
+  const ends = [];
+  for (const init of D.inits) {
+    const m = bs.map(b => D.finetune[b][init].test.mean), sd = bs.map(b => D.finetune[b][init].test.std);
+    const dim = focus && focus !== init, g = el("g", { style: `opacity:${dim ? 0.12 : 1}` }, s);
+    if (focus === init) {
+      const up = m.map((v, i) => `${x(i)},${y(v + sd[i])}`), dn = m.map((v, i) => `${x(i)},${y(v - sd[i])}`).reverse();
+      el("polygon", { points: up.concat(dn).join(" "), style: `fill:${icol(init)};opacity:0.14` }, g);
+    }
+    el("polyline", { points: m.map((v, i) => `${x(i)},${y(v)}`).join(" "), style: `fill:none;stroke:${icol(init)};stroke-width:${init === "Scratch" ? 2.4 : 2};${init === "Scratch" ? "stroke-dasharray:6 4" : ""}` }, g);
+    m.forEach((v, i) => el("circle", { cx: x(i), cy: y(v), r: i === bi ? 5 : 3.2, style: `fill:${icol(init)};stroke:var(--sheet);stroke-width:1.5`,
+      "data-tip": `${init} · ${blong(bs[i])} labels/area\n${pct(v)} ± ${pct(sd[i])} %` }, g));
+    ends.push({ init, y: y(m[m.length - 1]), dim });
+  }
+  ends.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) ends[i].y = Math.max(ends[i].y, ends[i - 1].y + 14);
+  for (const e of ends) el("text", { x: W - R + 10, y: e.y + 4, style: `fill:${icol(e.init)};opacity:${e.dim ? 0.3 : 1};font-weight:600` }, s, e.init);
+  document.getElementById("ft-chart").replaceChildren(s);
+  const lg = document.getElementById("ft-legend");
+  lg.innerHTML = D.inits.map(i => `<button class="node" type="button" style="width:auto;padding:4px 10px;font-size:0.8rem" data-f="${i}" aria-pressed="${focus === i}"><i style="background:${icol(i)}"></i>${i}</button>`).join("") + `<span class="small muted">Select one to highlight it with its ±1 std band.</span>`;
+  lg.querySelectorAll("button").forEach(b => b.onclick = () => { focus = focus === b.dataset.f ? null : b.dataset.f; ftChart(); });
+}
+function ftTable() {
+  const head = ["Init", ...D.budgets.map(b => blong(b))];
+  const rows = D.inits.map(i => [i, ...D.budgets.map(b => {
+    const top = Math.max(...D.inits.map(j => D.finetune[b][j].test.mean));
+    return `<td class="${D.finetune[b][i].test.mean === top ? "best" : ""}">${ms(D.finetune[b][i].test)}</td>`;
+  })]);
+  document.getElementById("ft-table").innerHTML = `<table><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr><td>${esc(r[0])}</td>${r.slice(1).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+/* ---------- stage 3 ---------- */
+function waterfall() {
+  const b = D.budgets[bi], P = D.posttrain[b];
+  document.querySelectorAll("#wf-seg button").forEach((t, i) => t.setAttribute("aria-pressed", i === bi));
+  document.getElementById("wf-title").textContent = `Accuracy waterfall · ${blong(b)} label${b === "1" ? "" : "s"} per area`;
+  const steps = [["Scratch", P["Scratch"]], [`Pre-train (${D.best_pretrain_method})`, P["Pre-trained"]], ["+ Self-training", P["+ Self-training"]], ["+ Correct & Smooth", P["+ Correct&Smooth"]]];
+  const hasS = !!P[SEST], ens = hasS ? P[SEST] : P["Ensemble + C&S"];
+  const vals = [...steps.map(s => s[1].mean), ens.mean];
+  const lo = Math.max(0, Math.floor((Math.min(...vals) - 0.06) * 20) / 20), hi = Math.min(1, Math.ceil((Math.max(...vals) + 0.03) * 20) / 20);
+  const W = 760, H = 300, L = 40, R = 16, T = 18, B = 54, s = svg(W, H, "Post-training waterfall");
+  const cols = 6, cw = (W - L - R) / cols, x = i => L + i * cw + cw * 0.18, bw = cw * 0.64;
+  const y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  for (const t of ticks(lo, hi, 5)) {
+    el("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), style: "stroke:var(--grid)" }, s);
+    el("text", { x: L - 6, y: y(t) + 4, "text-anchor": "end" }, s, Math.round(t * 100) + "%");
+  }
+  const label = (i, txt) => {
+    const words = txt.split(" "), mid = Math.ceil(words.length / 2);
+    el("text", { x: x(i) + bw / 2, y: H - B + 18, "text-anchor": "middle", class: "lbl", style: "font-size:11px" }, s, words.slice(0, mid).join(" "));
+    if (words.length > 1) el("text", { x: x(i) + bw / 2, y: H - B + 32, "text-anchor": "middle", class: "lbl", style: "font-size:11px" }, s, words.slice(mid).join(" "));
+  };
+  let prev = null;
+  steps.forEach(([name, v], i) => {
+    const cur = v.mean;
+    if (i === 0) {
+      el("rect", { x: x(i), y: y(cur), width: bw, height: y(lo) - y(cur), rx: 3, style: "fill:var(--i0)", "data-tip": `Scratch\n${ms(v)} %` }, s);
+      el("text", { x: x(i) + bw / 2, y: y(cur) - 6, "text-anchor": "middle", class: "strong" }, s, pct(cur));
+    } else {
+      const d = cur - prev, top = Math.max(cur, prev), bot = Math.min(cur, prev);
+      el("line", { x1: x(i - 1) + bw, x2: x(i), y1: y(prev), y2: y(prev), style: "stroke:var(--ink-3);stroke-dasharray:2 3" }, s);
+      el("rect", { x: x(i), y: y(top), width: bw, height: Math.max(2, y(bot) - y(top)), rx: 3, style: `fill:${d >= 0 ? "var(--good)" : "var(--bad)"};opacity:0.9`,
+        "data-tip": `${name}\n${ms(v)} %\nstep ${signed(d * 100)} pts` }, s);
+      el("text", { x: x(i) + bw / 2, y: y(top) - 6, "text-anchor": "middle", class: "strong" }, s, signed(d * 100));
+    }
+    label(i, name); prev = cur;
+  });
+  const fin = P["+ Correct&Smooth"];
+  el("rect", { x: x(4), y: y(fin.mean), width: bw, height: y(lo) - y(fin.mean), rx: 3, style: "fill:var(--accent)", "data-tip": `Single-model pipeline\n${ms(fin)} %` }, s);
+  el("text", { x: x(4) + bw / 2, y: y(fin.mean) - 6, "text-anchor": "middle", class: "strong" }, s, pct(fin.mean));
+  label(4, "Single model total");
+  el("rect", { x: x(5), y: y(ens.mean), width: bw, height: y(lo) - y(ens.mean), rx: 3, style: `fill:${hasS ? "var(--good)" : "var(--i5)"}`, "data-tip": hasS ? `Self-ensembling self-training\n${ms(ens)} %\n(ensemble + C&S ${ms(P["Ensemble + C&S"])} %)` : `Val-selected ensemble + C&S\n${ms(ens)} %` }, s);
+  el("text", { x: x(5) + bw / 2, y: y(ens.mean) - 6, "text-anchor": "middle", class: "strong" }, s, pct(ens.mean));
+  label(5, hasS ? "Self-training loop" : "Ensemble + C&S");
+  el("line", { x1: L + 4 * cw, x2: L + 4 * cw, y1: T, y2: H - B + 4, style: "stroke:var(--rule)" }, s);
+  document.getElementById("wf-chart").replaceChildren(s);
+  const rounds = P.self_training_rounds || [];
+  const csUsed = (P.cs_alphas || []).filter(Boolean).length;
+  const members = (P.ensemble_members || []).map(m => [...new Set(m)].join("+")).join(" · ");
+  document.getElementById("wf-cap").textContent = `Mean test accuracy over ${D.config.seeds} seeds; hover a bar for ± std. Green and red bars show the change each step makes. Every step can be rejected on validation. Self-training rounds kept per seed: ${rounds.join(", ") || "n/a"} (0 = rejected). Correct & Smooth kept on ${csUsed} of ${D.config.seeds} seeds. Ensemble members picked on validation, per seed: ${members || "n/a"}.`;
+}
+function calChart() {
+  const bs = D.budgets, W = 460, rh = 36, L = 88, R = 70, T = 6, H = T + bs.length * rh + 28, s = svg(W, H, "Calibration error before and after temperature scaling");
+  const hi = Math.max(0.05, ...bs.map(b => D.calibration[b].before.ece.mean)) * 1.1, x = v => L + v / hi * (W - L - R);
+  for (const t of ticks(0, hi, 4)) {
+    el("line", { x1: x(t), x2: x(t), y1: T, y2: H - 24, style: "stroke:var(--grid)" }, s);
+    el("text", { x: x(t), y: H - 8, "text-anchor": "middle" }, s, Math.round(t * 100) + "%");
+  }
+  bs.forEach((b, i) => {
+    const yy = T + i * rh + rh / 2, c = D.calibration[b], a = c.before.ece.mean, z = c.after.ece.mean;
+    el("text", { x: L - 10, y: yy + 4, "text-anchor": "end", class: "lbl" }, s, `${blabel(b)} / area`);
+    el("line", { x1: x(z), x2: x(a), y1: yy, y2: yy, style: "stroke:var(--rule);stroke-width:4;stroke-linecap:round" }, s);
+    const tipTxt = `${blong(b)} labels/area\nECE ${pct(a)}% → ${pct(z)}%\nNLL ${c.before.nll.mean.toFixed(3)} → ${c.after.nll.mean.toFixed(3)}\nT = ${c.temperature.mean.toFixed(2)}`;
+    el("circle", { cx: x(a), cy: yy, r: 6, style: "fill:var(--bad)", "data-tip": tipTxt }, s);
+    el("circle", { cx: x(z), cy: yy, r: 6, style: "fill:var(--good)", "data-tip": tipTxt }, s);
+    el("text", { x: Math.max(x(a), x(z)) + 12, y: yy + 4 }, s, `T=${c.temperature.mean.toFixed(2)}`);
+  });
+  const box = document.getElementById("cal-chart"); box.replaceChildren(s);
+  const lg = document.createElement("div"); lg.className = "legend";
+  lg.innerHTML = `<span><i style="background:var(--bad);height:8px;width:8px;border-radius:50%"></i>raw</span><span><i style="background:var(--good);height:8px;width:8px;border-radius:50%"></i>temperature-scaled</span>`;
+  box.appendChild(lg);
+}
+function distChart() {
+  const bs = D.budgets, K = [["mlp_scratch", "MLP trained on labels only", "var(--i0)"], ["mlp_distilled", "MLP distilled from the GNN", "var(--i4)"], ["teacher", "GNN pipeline (teacher)", "var(--accent)"]];
+  const W = 460, gh = 52, L = 88, R = 44, T = 4, H = T + bs.length * gh + 24, s = svg(W, H, "Distillation results");
+  const x = v => L + v * (W - L - R);
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    el("line", { x1: x(t), x2: x(t), y1: T, y2: H - 20, style: "stroke:var(--grid)" }, s);
+    el("text", { x: x(t), y: H - 5, "text-anchor": "middle" }, s, t * 100 + "%");
+  }
+  bs.forEach((b, i) => {
+    const y0 = T + i * gh;
+    el("text", { x: L - 10, y: y0 + gh / 2 + 2, "text-anchor": "end", class: "lbl" }, s, `${blabel(b)} / area`);
+    K.forEach(([k, n, c], j) => {
+      const v = D.distillation[b][k], yy = y0 + 4 + j * 14;
+      el("rect", { x: x(0), y: yy, width: x(v.mean) - x(0), height: 11, rx: 2, style: `fill:${c}`, "data-tip": `${n}\n${ms(v)} %` }, s);
+      el("text", { x: x(v.mean) + 5, y: yy + 10, style: "font-size:10px" }, s, pct(v.mean));
+    });
+  });
+  const box = document.getElementById("dist-chart"); box.replaceChildren(s);
+  const lg = document.createElement("div"); lg.className = "legend";
+  lg.innerHTML = K.map(([, n, c]) => `<span><i style="background:${c}"></i>${n}</span>`).join("");
+  box.appendChild(lg);
+  const sp = D.inference_speed;
+  document.getElementById("dist-cap").textContent = `The student copies the calibrated soft labels of the final GNN pipeline on every node. At inference it reads only node features, so it works for papers that have no citations yet. One full-graph forward pass on CPU takes ${sp.mlp_ms.toFixed(1)} ms for the MLP vs ${sp.gcn_ms.toFixed(1)} ms for the GCN.`;
+}
+
+/* ---------- findings (computed from the data) ---------- */
+function findings() {
+  const b0 = D.budgets[0], bp = D.budgets[D.budgets.length - 1], best = D.best_pretrain_method, F = D.finetune;
+  const gain0 = (F[b0][best].test.mean - F[b0].Scratch.test.mean) * 100, gainP = (F[bp][best].test.mean - F[bp].Scratch.test.mean) * 100;
+  const cal = D.calibration[bp], dst = D.distillation[bp];
+  const failed = D.inits.filter(m => m !== "Scratch" && (D.pretrain[m].nmi.mean < 0.05 || D.pretrain[m].linear_probe.mean < D.pretrain.Scratch.linear_probe.mean));
+  const items = [
+    [`Pre-training matters most when labels are scarcest`, `With ${blong(b0)} label${b0 === "1" ? "" : "s"} per area, ${best} changes accuracy by ${signed(gain0)} pts over scratch. At ${blong(bp)} labels the gap is ${signed(gainP)} pts, because the labels themselves already carry most of the signal.`],
+    [`Post-training needs labels to work with`, `On top of the pre-trained model, the validation-gated stack adds ${D.budgets.map(b => `${signed((finalOf(D.posttrain[b]) - D.posttrain[b]["Pre-trained"].mean) * 100)} at ${blabel(b)}`).join(", ")} labels/area. With one label there is little to propagate or to select on, so validation rejects most steps.`],
+    [`Raw confidences are not probabilities`, `Temperature scaling cuts expected calibration error from ${pct(cal.before.ece.mean)}% to ${pct(cal.after.ece.mean)}% (T = ${cal.temperature.mean.toFixed(2)}) without changing a single prediction.`],
+    [`The graph can be distilled away`, `An MLP trained on labels alone reaches ${pct(dst.mlp_scratch.mean)}%. Distilled from the GNN pipeline, the same MLP reaches ${pct(dst.mlp_distilled.mean)}% and needs no edges at inference.`],
+  ];
+  if (failed.length) items.push([`Not every objective transfers`, `${failed.join(", ")} scored below the random-init GCN on the frozen probe in this setup. Its results are kept in every chart rather than tuned until they look good.`]);
+  document.getElementById("findings").innerHTML = items.map(([h, p]) => `<li><b>${esc(h)}</b><p>${esc(p)}</p></li>`).join("");
+}
+
+function render(data) {
+  D = data;
+  if (D.config.quick) {
+    const n = document.createElement("p"); n.className = "banner";
+    n.textContent = `Preliminary data: ${D.config.seeds}-seed smoke test with pre-training shortened to ${Math.round(D.config.pretrain_scale * 100)}% of its epochs. These are not the final results.`;
+    document.querySelector("main .inner").prepend(n);
+  }
+  const b0 = D.budgets[0], bp = D.budgets[D.budgets.length - 1], best = D.best_pretrain_method;
+  const g0 = (D.finetune[b0][best].test.mean - D.finetune[b0].Scratch.test.mean) * 100;
+  const fin = finalOf(D.posttrain[bp]);
+  const fin0 = finalOf(D.posttrain[b0]);
+  document.getElementById("hstats").innerHTML = [
+    [`${pct(fin0)}%`, `test accuracy with ${blong(b0)} label${b0 === "1" ? "" : "s"} per area after the full stack (scratch ${pct(D.posttrain[b0].Scratch.mean)}%)`],
+    [`${signed(g0)} pts`, `from ${best} pre-training alone at that budget`],
+    [`${pct(fin)}%`, `with the public 20-per-area split (scratch ${pct(D.posttrain[bp].Scratch.mean)}%)`],
+    [`${D.config.seeds} seeds`, `${D.inits.length} inits × ${D.budgets.length} budgets, mean ± std throughout`],
+  ].map(([b, s]) => `<div class="hs"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join("");
+
+  buildFlow();
+  probeChart(); lossMultiples();
+  const sl = document.getElementById("bslider");
+  sl.max = D.budgets.length - 1;
+  sl.oninput = e => setBudget(+e.target.value);
+  document.getElementById("bticks").innerHTML = D.budgets.map((b, i) => `<button type="button" data-i="${i}">${blabel(b)}</button>`).join("");
+  document.querySelectorAll("#bticks button").forEach(t => t.onclick = () => setBudget(+t.dataset.i));
+  document.getElementById("wf-seg").innerHTML = D.budgets.map((b, i) => `<button type="button" data-i="${i}">${blabel(b)}</button>`).join("");
+  document.querySelectorAll("#wf-seg button").forEach(t => t.onclick = () => setBudget(+t.dataset.i));
+  ftTable(); setBudget(0); calChart(); distChart(); findings();
+  document.getElementById("run-meta").textContent = `This page: ${D.config.seeds} seeds, budgets ${D.budgets.map(blabel).join(" · ")} labels per area, about 1.5 hours cold on a 4-core CPU (pre-training and fine-tuning are cached per seed, so post-training changes rerun in about 25 min). The graph at the top is the 712-paper citation subgraph exported by tools/export_graph_layout.py.`;
+}
+
+buildFlow();
+fetch("cora_layout.json").then(r => r.json()).then(Hero.start).catch(() => {});
+fetch("pretrain_posttrain.json").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  .then(render)
+  .catch(e => { document.getElementById("status").textContent = `Could not load pretrain_posttrain.json (${e.message}). Run pretrain_posttrain.py to generate it.`; });
+</script>

@@ -1,0 +1,809 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>After Training</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: a night-time instrument panel. One live graph at full width is the hero; every
+   section below is a readout of the same self-training loop, all driven by one budget switch. */
+:root {
+  --void: #06070c;
+  --deck: #0c0e16;
+  --panel: #11131d;
+  --line: #1f2333;
+  --line-2: #2c3146;
+  --text: #eceef6;
+  --text-2: #9ba1b9;
+  --text-3: #636a86;
+  --flare: #ffb547;        /* pseudo-labels: the one loud colour */
+  --flare-dim: #4a3818;
+  --good: #44e0a0;
+  --bad: #ff6b7d;
+  --cool: #8fa2ff;
+  --k0: #f59e0b; --k1: #22c55e; --k2: #6d8bff; --k3: #f472b6; --k4: #22d3ee; --k5: #a78bfa; --k6: #fb7185;
+  --f-display: "Unbounded", "Manrope", system-ui, sans-serif;
+  --f-body: "Manrope", system-ui, -apple-system, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { background: var(--void); }
+body { margin: 0; background: var(--void); color: var(--text); font: 400 1rem/1.6 var(--f-body); }
+.band { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.inner { max-width: 1180px; margin: 0 auto; }
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+h1 { font: 800 clamp(2rem, 4vw, 3.3rem)/1.02 var(--f-display); letter-spacing: -0.035em; }
+h2 { font: 700 clamp(1.45rem, 3vw, 2.1rem)/1.12 var(--f-display); letter-spacing: -0.025em; }
+h3 { font: 700 1.02rem/1.3 var(--f-body); }
+p { margin: 0; max-width: 64ch; }
+.t2 { color: var(--text-2); }
+.t3 { color: var(--text-3); }
+.mono { font-family: var(--f-mono); }
+.eyebrow { font: 500 0.72rem var(--f-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-3); }
+.eyebrow b { color: var(--flare); font-weight: 500; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--flare); outline-offset: 2px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- top bar ---------- */
+.topbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 15; background: rgba(6, 7, 12, 0.86); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 16; background: var(--void); }
+.topbar .inner { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; justify-content: space-between; padding-block: 10px; }
+.brand { font: 700 0.92rem var(--f-display); letter-spacing: -0.01em; }
+.brand span { color: var(--flare); }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 999px; padding: 3px; gap: 2px; background: var(--deck); flex-wrap: wrap; }
+.seg button { border: 0; background: transparent; color: var(--text-2); border-radius: 999px; padding: 5px 11px; cursor: pointer; font: 500 0.78rem var(--f-mono); }
+.seg button[aria-pressed="true"] { background: var(--text); color: var(--void); }
+.budget-label { display: inline-flex; gap: 10px; align-items: center; font: 500 0.72rem var(--f-mono); color: var(--text-3); letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* ---------- hero ---------- */
+.hero { padding-block: 44px 36px; position: relative; overflow: hidden; }
+.hero .inner { display: grid; grid-template-columns: minmax(0, 4.4fr) minmax(0, 7fr); gap: 36px; align-items: start; }
+.hero .lede { color: var(--text-2); margin-top: 18px; font-size: 1.03rem; }
+.hero h1 em { font-style: normal; color: var(--flare); }
+.gauge { margin-top: 28px; display: grid; gap: 4px; }
+.gauge .big { font: 800 clamp(3rem, 7vw, 5.2rem)/0.95 var(--f-display); letter-spacing: -0.04em; color: var(--good); font-variant-numeric: tabular-nums; }
+.gauge .big small { font: 600 1rem var(--f-mono); color: var(--text-2); letter-spacing: 0; margin-left: 6px; }
+.gauge .cap { font-size: 0.88rem; color: var(--text-2); max-width: 40ch; }
+.ladder-mini { margin-top: 22px; display: grid; gap: 8px; font: 500 0.8rem var(--f-mono); }
+.ladder-mini div { display: grid; grid-template-columns: 150px minmax(0, 1fr) 52px; gap: 10px; align-items: center; color: var(--text-2); }
+.ladder-mini .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.ladder-mini .bar span { display: block; height: 100%; border-radius: 4px; }
+@media (prefers-reduced-motion: no-preference) { .ladder-mini .bar span { transition: width .5s cubic-bezier(.2,.8,.2,1); } }
+.ladder-mini b { color: var(--text); font-weight: 500; text-align: right; }
+
+.stage { position: relative; border: 1px solid var(--line); border-radius: 16px; background: radial-gradient(120% 90% at 70% 30%, #10142a 0%, var(--deck) 55%, var(--void) 100%); overflow: hidden; }
+.canvas-box { position: relative; aspect-ratio: 16 / 11; width: 100%; max-width: 100%; }
+.canvas-box canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.hud { position: absolute; left: 14px; top: 12px; display: grid; gap: 2px; font: 500 0.75rem var(--f-mono); color: var(--text-2); pointer-events: none; }
+.hud .rnd { font: 800 1.6rem/1 var(--f-display); color: var(--text); letter-spacing: -0.02em; }
+.hud .rnd span { color: var(--flare); }
+.hud-r { position: absolute; right: 14px; top: 12px; text-align: right; font: 500 0.75rem var(--f-mono); color: var(--text-2); display: grid; gap: 2px; pointer-events: none; }
+.hud-r b { color: var(--text); font: 700 1.3rem/1.1 var(--f-display); font-variant-numeric: tabular-nums; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--line); background: rgba(12, 14, 22, 0.8); }
+.play { width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--line-2); background: var(--panel); cursor: pointer; display: grid; place-items: center; flex: none; }
+.play:hover { border-color: var(--flare); }
+.play svg { width: 14px; height: 14px; fill: var(--text); }
+.scrub { flex: 1 1 220px; display: grid; gap: 4px; min-width: 0; }
+.scrub input { width: 100%; accent-color: var(--flare); }
+.scrub .ticks { display: flex; justify-content: space-between; font: 500 0.7rem var(--f-mono); color: var(--text-3); }
+.scrub .ticks span.on { color: var(--flare); }
+.key { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 14px 14px; font-size: 0.76rem; color: var(--text-2); }
+.key span { display: inline-flex; align-items: center; gap: 7px; }
+.key svg { width: 14px; height: 14px; overflow: visible; }
+
+/* ---------- sections ---------- */
+main.band { padding-block: 24px 80px; }
+main .inner { display: grid; gap: 88px; }
+section { display: grid; gap: 22px; min-width: 0; }
+.sec-head { display: grid; gap: 12px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; min-width: 0; display: grid; gap: 14px; align-content: start; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.grid-loop { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 22px; align-items: center; }
+.cap { font-size: 0.84rem; color: var(--text-2); max-width: 72ch; }
+
+/* loop diagram */
+.loop svg { width: 100%; height: auto; display: block; max-width: 520px; margin: 0 auto; }
+.loop .stepnode { cursor: pointer; }
+.loop .stepnode circle.ring { fill: var(--panel); stroke: var(--line-2); stroke-width: 1.5; }
+.loop .stepnode.on circle.ring { stroke: var(--flare); stroke-width: 2.2; }
+.loop .stepnode text { font: 600 12px var(--f-body); fill: var(--text); }
+.loop .stepnode text.sub { font: 500 10px var(--f-mono); fill: var(--text-3); }
+.steps-list { display: grid; gap: 10px; counter-reset: st; }
+.step { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--deck); cursor: pointer; text-align: left; width: 100%; }
+.step::before { counter-increment: st; content: counter(st); font: 700 0.85rem var(--f-display); color: var(--text-3); width: 28px; height: 28px; border: 1px solid var(--line-2); border-radius: 50%; display: grid; place-items: center; }
+.step.on { border-color: var(--flare); background: #15120b; }
+.step.on::before { color: var(--void); background: var(--flare); border-color: var(--flare); }
+.step b { display: block; font-weight: 700; }
+.step span { font-size: 0.86rem; color: var(--text-2); }
+
+/* charts */
+.chart { width: 100%; overflow-x: auto; }
+.chart svg { display: block; width: 100%; height: auto; min-width: 440px; }
+svg text { font-family: var(--f-mono); font-size: 11px; fill: var(--text-3); }
+svg .lbl { fill: var(--text); font-size: 12px; }
+svg .strong { fill: var(--text); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.78rem; color: var(--text-2); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend i.dot { width: 9px; height: 9px; border-radius: 50%; }
+.multiples { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.mini { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--deck); display: grid; gap: 6px; cursor: pointer; text-align: left; }
+.mini.on { border-color: var(--flare); }
+.mini .top { display: flex; justify-content: space-between; font: 500 0.72rem var(--f-mono); color: var(--text-3); }
+.mini .top b { color: var(--good); font-weight: 600; }
+.mini svg { width: 100%; height: auto; display: block; min-width: 0; }
+
+.discipline { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+.discipline li { border-top: 1px solid var(--line-2); padding-top: 12px; display: grid; gap: 4px; }
+.discipline b { font: 700 0.96rem var(--f-body); }
+.discipline span { font-size: 0.86rem; color: var(--text-2); }
+table { border-collapse: collapse; width: 100%; font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font: 500 0.68rem var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+td.win { color: var(--good); font-weight: 600; }
+.tbl { overflow-x: auto; }
+pre.cmd { margin: 0; background: var(--deck); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; overflow-x: auto; font: 0.84rem/1.75 var(--f-mono); color: var(--text-2); }
+pre.cmd b { color: var(--text); font-weight: 500; }
+a { color: var(--cool); }
+.status { font: 0.85rem var(--f-mono); color: var(--text-3); }
+.banner { border: 1px solid var(--flare); border-radius: 10px; padding: 10px 14px; font-size: 0.86rem; color: var(--text); background: #15120b; }
+
+/* scroll story */
+.story { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+.story-pin { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 72px); }
+.story-pin .stage { box-shadow: 0 30px 80px -30px rgba(255, 181, 71, 0.18); }
+.story-pin .canvas-box { aspect-ratio: 1 / 1; }
+.story-steps { display: grid; gap: 0; }
+.beat { min-height: 78vh; display: grid; align-content: center; padding-block: 24px; }
+.beat .card { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 20px 22px; display: grid; gap: 10px; transition: border-color .3s, transform .3s, opacity .3s; opacity: 0.45; }
+.beat.on .card { border-color: var(--flare); opacity: 1; }
+@media (prefers-reduced-motion: no-preference) { .beat .card { transform: translateY(10px); } .beat.on .card { transform: none; } }
+.beat .rk { font: 800 2.6rem/1 var(--f-display); letter-spacing: -0.04em; color: var(--text); }
+.beat .rk span { color: var(--flare); }
+.beat .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
+.beat .facts div { display: grid; gap: 0; }
+.beat .facts b { font: 700 1.25rem/1.2 var(--f-display); font-variant-numeric: tabular-nums; }
+.beat .facts span { font: 500 0.72rem var(--f-mono); color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.beat p { font-size: 0.92rem; color: var(--text-2); }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 500 0.74rem var(--f-mono); padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--text-2); }
+.chip.good { color: var(--good); border-color: rgba(68, 224, 160, 0.4); }
+.chip.bad { color: var(--bad); border-color: rgba(255, 107, 125, 0.4); }
+.heat { display: grid; gap: 3px; font: 500 0.72rem var(--f-mono); }
+.heat .row { display: grid; grid-template-columns: 150px repeat(var(--cols), minmax(0, 1fr)); gap: 3px; align-items: stretch; }
+.heat .row > span:first-child { color: var(--text-2); display: flex; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.heat .cell { border-radius: 4px; padding: 7px 0; text-align: center; color: var(--void); font-weight: 600; font-variant-numeric: tabular-nums; }
+.heat .cell.on { outline: 2px solid var(--text); outline-offset: -2px; }
+.heat .hdr span { text-align: center; color: var(--text-3); }
+
+#tip { position: fixed; z-index: 30; pointer-events: none; background: var(--text); color: var(--void); font: 0.76rem/1.45 var(--f-mono); padding: 7px 10px; border-radius: 7px; max-width: 270px; white-space: pre-line; }
+
+@media (max-width: 900px) {
+  .hero .inner, .grid2, .grid-loop, .story { grid-template-columns: minmax(0, 1fr); }
+  .story-pin { top: calc(env(safe-area-inset-top, 0px) + 96px); z-index: 2; }
+  .story-pin .canvas-box { aspect-ratio: 4 / 3; }
+  .beat { min-height: 62vh; }
+  .heat .row { grid-template-columns: 96px repeat(var(--cols), minmax(0, 1fr)); }
+  .canvas-box { aspect-ratio: 1 / 1; }
+  .ladder-mini div { grid-template-columns: 118px minmax(0, 1fr) 48px; }
+}
+</style>
+
+<div id="tip" hidden></div>
+
+<div class="topbar band">
+  <div class="inner">
+    <div class="brand">After&nbsp;Training <span>·</span> <span style="color:var(--text-3);font-weight:500">Cora</span></div>
+    <div class="budget-label">labels per area <div class="seg" id="bseg" role="group" aria-label="Labelled papers per research area"></div></div>
+  </div>
+</div>
+
+<header class="hero band">
+  <div class="inner">
+    <div>
+      <div class="eyebrow">Post-training · <b>self-ensembling self-training</b></div>
+      <h1 style="margin-top:16px">The model keeps learning <em>after</em> training ends.</h1>
+      <p class="lede">The pretrained encoder has been fine-tuned on a handful of labelled papers, and the training labels are spent. Post-training keeps going without them. A calibrated teacher labels the papers it is most sure about, students learn from those pseudo-labels, and the students join the teacher. The validation set decides when to stop, and the test set is never consulted.</p>
+      <div class="gauge">
+        <div class="big" id="gain">—</div>
+        <div class="cap" id="gain-cap"><span class="status" id="status">Loading results…</span></div>
+      </div>
+      <div class="ladder-mini" id="ladder-mini"></div>
+    </div>
+    <div class="stage">
+      <div class="canvas-box">
+        <canvas id="graph" aria-label="Citation graph coloured by the teacher's predicted research area at the selected self-training round"></canvas>
+        <div class="hud"><span>self-training round</span><div class="rnd" id="hud-round">0</div><span id="hud-pl">—</span></div>
+        <div class="hud-r"><span>teacher test accuracy · seed 0</span><b id="hud-acc">—</b><span id="hud-flip">—</span></div>
+      </div>
+      <div class="controls">
+        <button class="play" id="play" type="button" aria-label="Play the rounds"><svg viewBox="0 0 10 10"><path d="M2 1 L9 5 L2 9 Z"></path></svg></button>
+        <div class="scrub">
+          <input type="range" id="round" min="0" max="4" step="1" value="0" aria-label="Self-training round">
+          <div class="ticks" id="round-ticks"></div>
+        </div>
+      </div>
+      <div class="key" id="key"></div>
+    </div>
+  </div>
+</header>
+
+<main class="band">
+  <div class="inner">
+
+    <section aria-labelledby="h-loop">
+      <div class="sec-head">
+        <div class="eyebrow">01 · the loop</div>
+        <h2 id="h-loop">Five moves, repeated until validation says stop</h2>
+        <p class="t2">Each round runs the five moves in order. The teacher can only grow: the round-0 models stay in the pool, so a bad round costs nothing, because validation can fall back to an earlier teacher.</p>
+      </div>
+      <div class="panel grid-loop loop">
+        <div id="loop-svg"></div>
+        <div class="steps-list" id="steps"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-story">
+      <div class="sec-head">
+        <div class="eyebrow">02 · scroll through it</div>
+        <h2 id="h-story">One seed, one round at a time</h2>
+        <p class="t2">Scroll and the graph advances one self-training round per card. These are the actual predictions of the seed-0 teacher on the 712-paper citation subgraph. White bursts are papers that just became right; red bursts are papers that just became wrong.</p>
+      </div>
+      <div class="story">
+        <div class="story-pin"><div class="stage"><div class="canvas-box"><canvas id="story-graph" data-top="4" aria-label="Citation graph at the round shown in the active card"></canvas></div></div></div>
+        <div class="story-steps" id="beats"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-rounds">
+      <div class="sec-head">
+        <div class="eyebrow">03 · round by round</div>
+        <h2 id="h-rounds">More pseudo-labels, and they stay accurate</h2>
+        <p class="t2">For the selected budget: how many papers the teacher pseudo-labels each round, what fraction of those are correct, and how the teacher's accuracy moves. Averaged over all seeds.</p>
+      </div>
+      <div class="grid2">
+        <div class="panel">
+          <h3>Teacher accuracy by round</h3>
+          <div class="chart" id="acc-chart"></div>
+          <div class="legend"><span><i style="background:var(--cool)"></i>validation (drives every decision)</span><span><i style="background:var(--good)"></i>test (reported only)</span><span><i class="dot" style="background:var(--flare)"></i>round validation picked, per seed</span></div>
+        </div>
+        <div class="panel">
+          <h3>Pseudo-labels per round</h3>
+          <div class="chart" id="pl-chart"></div>
+          <div class="legend"><span><i style="background:var(--flare);height:8px"></i>correct pseudo-labels</span><span><i style="background:var(--flare-dim);height:8px"></i>wrong pseudo-labels</span></div>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="panel">
+          <h3>Where the test papers go, round to round</h3>
+          <div class="chart" id="flow-chart"></div>
+          <div class="legend"><span><i style="background:var(--good);height:8px"></i>right at that round</span><span><i style="background:var(--bad);height:8px"></i>wrong at that round</span><span><i style="background:#ffffff;height:8px"></i>fixed (wrong → right)</span><span><i style="background:var(--bad);height:3px"></i>broken (right → wrong)</span></div>
+          <p class="cap">Seed 0 teacher, all 1,000 test papers. Columns are rounds and ribbons are papers changing state between rounds.</p>
+        </div>
+        <div class="panel">
+          <h3>Accuracy per research area</h3>
+          <div class="heat" id="heat"></div>
+          <p class="cap">Seed 0 teacher, test papers in each area. The outlined column is the round validation kept.</p>
+        </div>
+      </div>
+      <div class="multiples" id="multiples"></div>
+      <p class="cap">Every budget at a glance: test accuracy of the teacher over rounds, mean of all seeds. Select one to switch the whole page to it.</p>
+    </section>
+
+    <section aria-labelledby="h-ladder">
+      <div class="sec-head">
+        <div class="eyebrow">04 · the whole stack</div>
+        <h2 id="h-ladder">From scratch to self-trained, at every budget</h2>
+        <p class="t2">Each row is one label budget. Dots mark the test accuracy after each stage, mean of all seeds, and the bar spans the total gain. Hover a dot for ± std.</p>
+      </div>
+      <div class="panel">
+        <div class="chart" id="ladder"></div>
+        <div class="legend" id="ladder-legend"></div>
+      </div>
+      <details class="panel">
+        <summary class="mono t2" style="cursor:pointer;font-size:0.82rem">Every stage, every budget (test accuracy %, mean ± std)</summary>
+        <div class="tbl" id="stage-table"></div>
+      </details>
+    </section>
+
+    <section aria-labelledby="h-cal">
+      <div class="sec-head">
+        <div class="eyebrow">05 · trust and speed</div>
+        <h2 id="h-cal">Confidences you can believe, and a model that needs no graph</h2>
+      </div>
+      <div class="grid2">
+        <div class="panel">
+          <h3>Reliability diagram</h3>
+          <div class="chart" id="rel-chart"></div>
+          <div class="legend"><span><i class="dot" style="background:var(--bad)"></i>raw teacher</span><span><i class="dot" style="background:var(--good)"></i>after temperature scaling</span><span><i style="background:var(--text-3)"></i>perfect calibration</span></div>
+          <p class="cap" id="rel-cap"></p>
+        </div>
+        <div class="panel">
+          <h3>Distillation into an MLP</h3>
+          <div class="chart" id="dist-chart"></div>
+          <p class="cap" id="dist-cap"></p>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-disc">
+      <div class="sec-head">
+        <div class="eyebrow">06 · keeping score honestly</div>
+        <h2 id="h-disc">How the test set stayed clean</h2>
+      </div>
+      <ul class="discipline">
+        <li><b>Validation picks everything</b><span>Rounds, Correct &amp; Smooth α values, ensemble members, temperature and the distillation weight are all chosen on the 500 validation papers.</span></li>
+        <li><b>Validation is never pseudo-labelled</b><span>Pseudo-labels come only from papers outside the labelled and validation sets, so the selection signal stays independent.</span></li>
+        <li><b>Designed on validation only</b><span>The loop's design (students, rounds, consistency) was compared with a script that prints validation accuracy and nothing else.</span></li>
+        <li><b>Five seeds, fresh labels</b><span>Each seed draws a new set of labelled papers and pre-trains new encoders. Every number is mean ± std over all five.</span></li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="h-run">
+      <div class="sec-head">
+        <div class="eyebrow">07 · reproduce</div>
+        <h2 id="h-run">Run it</h2>
+      </div>
+      <pre class="cmd"><b>python3 pretrain_posttrain.py</b>            # pre-train, fine-tune, post-train → docs/pretrain_posttrain.json
+<b>python3 pretrain_posttrain.py --quick</b>    # smoke test
+<b>python3 tools/export_graph_layout.py</b>     # graph layout for the hero</pre>
+      <p class="cap" id="meta"></p>
+      <p class="cap">Pre-training and the label-budget study: <a href="pretrain.html">Cora Pre-training Lab</a>.</p>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+const AREAS = ["Case Based", "Genetic Algorithms", "Neural Networks", "Probabilistic Methods", "Reinforcement Learning", "Rule Learning", "Theory"];
+const pct = v => (v * 100).toFixed(1);
+const signed = (v, d = 1) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(d)}`;
+const blabel = b => b === "public" ? "20" : b;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ms = (o, d = 1) => `${(o.mean * 100).toFixed(d)} ± ${(o.std * 100).toFixed(d)}`;
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+function svg(w, h, label) { const s = document.createElementNS(NS, "svg"); s.setAttribute("viewBox", `0 0 ${w} ${h}`); s.setAttribute("role", "img"); if (label) s.setAttribute("aria-label", label); return s; }
+function el(tag, attrs, parent, text) { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; if (parent) parent.appendChild(e); return e; }
+function ticks(lo, hi, n = 5) {
+  const span = hi - lo, mag = Math.pow(10, Math.floor(Math.log10(span / n)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => span / s <= n) || mag * 10;
+  const t = []; for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9; v += step) t.push(+v.toFixed(6));
+  return t;
+}
+const tip = document.getElementById("tip");
+document.addEventListener("pointermove", e => {
+  const t = e.target.closest && e.target.closest("[data-tip]");
+  if (!t) { tip.hidden = true; return; }
+  tip.textContent = t.getAttribute("data-tip"); tip.hidden = false;
+  tip.style.left = Math.max(8, Math.min(innerWidth - tip.offsetWidth - 8, e.clientX + 14)) + "px";
+  tip.style.top = Math.max(8, e.clientY - tip.offsetHeight - 12) + "px";
+});
+
+let D = null, L = null, B = null, round = 0, playing = null;
+const STAGE_SHOW = [["Scratch", "Trained from scratch", "var(--text-3)"], ["Pre-trained", "Pre-trained init", "var(--cool)"], ["Ensemble + C&S", "Ensemble + Correct & Smooth", "var(--k5)"], ["Self-ensembling self-training", "Self-ensembling self-training", "var(--flare)"]];
+const FINAL = "Self-ensembling self-training";
+
+/* ---------- hero graph ---------- */
+function hexRgb(h) { h = h.trim().replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join(""); const n = parseInt(h, 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+/* A graph view that morphs between self-training rounds. Colours cross-fade, papers whose
+   prediction changes emit a burst (white when it became right, red when it became wrong). */
+function makeGraph(canvas) {
+  const ctx = canvas.getContext("2d");
+  let pal = [], cur = null, from = null, to = null, t0 = 0, raf = 0, visible = true, state = null, bursts = [];
+  const DUR = reduce ? 1 : 800;
+  function palette() { const cs = getComputedStyle(document.documentElement); pal = AREAS.map((_, i) => hexRgb(cs.getPropertyValue(`--k${i}`))); }
+  function target(pred) { return L.nodes.map(nd => pal[pred[nd[4]]]); }
+  function set(budget, r) {
+    if (!L || !D) return;
+    palette();
+    const V = D.viz.budgets[budget], R = V.rounds[r], labels = D.viz.labels;
+    const prevState = state;
+    state = { V, R, train: new Set(V.train), pseudo: new Set(R.pseudo), pred: R.pred };
+    const tgt = target(R.pred);
+    if (!cur || !prevState || prevState.V !== V) { cur = tgt.map(c => c.slice()); from = null; to = tgt; bursts = []; }
+    else {
+      from = cur.map(c => c.slice()); to = tgt; t0 = performance.now();
+      const now = performance.now();
+      L.nodes.forEach((nd, i) => {
+        const id = nd[4], a = prevState.pred[id], bb = R.pred[id];
+        if (a !== bb) bursts.push({ i, t: now + Math.random() * 250, good: bb === labels[id] });
+      });
+    }
+    kick();
+  }
+  function frame(now) {
+    raf = 0;
+    if (!state) return;
+    const dpr = devicePixelRatio || 1, r = canvas.getBoundingClientRect();
+    if (!r.width) return;
+    const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, r.width, r.height);
+    const k = from ? Math.min(1, (now - t0) / DUR) : 1, e = 1 - Math.pow(1 - k, 3);
+    if (from) for (let i = 0; i < cur.length; i++) for (let c = 0; c < 3; c++) cur[i][c] = from[i][c] + (to[i][c] - from[i][c]) * e;
+    if (k >= 1) from = null;
+    const pad = 22, top = canvas.dataset.top ? +canvas.dataset.top : 18;
+    const X = x => pad + x * (r.width - 2 * pad), Y = y => pad + top + y * (r.height - 2 * pad - top);
+    const labels = D.viz.labels, { train, pseudo, pred } = state;
+    const pulse = reduce ? 0.5 : (Math.sin(now / 380) + 1) / 2;
+    ctx.lineWidth = 0.6;
+    for (const [u, v] of L.edges) {
+      const a = L.nodes[u], b = L.nodes[v], ca = cur[u];
+      ctx.strokeStyle = pred[a[4]] === pred[b[4]] ? `rgba(${ca[0] | 0},${ca[1] | 0},${ca[2] | 0},0.22)` : "rgba(150,160,200,0.08)";
+      ctx.beginPath(); ctx.moveTo(X(a[0]), Y(a[1])); ctx.lineTo(X(b[0]), Y(b[1])); ctx.stroke();
+    }
+    L.nodes.forEach((nd, i) => {
+      const id = nd[4], ok = pred[id] === labels[id], x = X(nd[0]), y = Y(nd[1]), c = cur[i];
+      const col = `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`, rad = 1.8 + Math.sqrt(nd[3]) * 0.6;
+      if (pseudo.has(id)) { ctx.beginPath(); ctx.arc(x, y, rad + 3.5 + pulse * 2.5, 0, 6.283); ctx.fillStyle = `rgba(255,181,71,${0.10 + 0.2 * pulse})`; ctx.fill(); }
+      ctx.beginPath(); ctx.arc(x, y, train.has(id) ? rad + 2.5 : rad, 0, 6.283);
+      if (ok) { ctx.fillStyle = col; ctx.fill(); } else { ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.stroke(); ctx.lineWidth = 0.6; }
+      if (train.has(id)) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 0.6; }
+    });
+    bursts = bursts.filter(bu => now - bu.t < 1100);
+    for (const bu of bursts) {
+      const q = (now - bu.t) / 1100; if (q < 0) continue;
+      const nd = L.nodes[bu.i], x = X(nd[0]), y = Y(nd[1]);
+      ctx.beginPath(); ctx.arc(x, y, 3 + q * 16, 0, 6.283);
+      ctx.strokeStyle = bu.good ? `rgba(255,255,255,${0.85 * (1 - q)})` : `rgba(255,107,125,${0.85 * (1 - q)})`;
+      ctx.lineWidth = 1.5 * (1 - q) + 0.3; ctx.stroke(); ctx.lineWidth = 0.6;
+    }
+    if (visible && !reduce) kick(); else if (from || bursts.length) kick();
+  }
+  function kick() { if (!raf) raf = requestAnimationFrame(frame); }
+  new ResizeObserver(() => { canvas.width = 0; kick(); }).observe(canvas);
+  new IntersectionObserver(es => { visible = es[0].isIntersecting; if (visible) kick(); }).observe(canvas);
+  return { set };
+}
+let Graph = null;
+
+function heroStats() {
+  const V = D.viz.budgets[B], R = V.rounds[round], labels = D.viz.labels, test = D.viz.test_idx;
+  const accT = test.reduce((s, i) => s + (R.pred[i] === labels[i]), 0) / test.length;
+  document.getElementById("hud-round").innerHTML = `${round}<span>${round === V.chosen_round ? " ✓" : ""}</span>`;
+  document.getElementById("hud-pl").textContent = round ? `${R.pseudo.length.toLocaleString()} pseudo-labels · ${pct(R.pseudo.reduce((s, i) => s + (R.pred[i] === labels[i]), 0) / Math.max(1, R.pseudo.length))}% correct` : "teacher before self-training";
+  document.getElementById("hud-acc").textContent = pct(accT) + "%";
+  const base = V.rounds[0].pred, flips = test.reduce((s, i) => s + (R.pred[i] !== base[i] ? (R.pred[i] === labels[i] ? 1 : -1) : 0), 0);
+  document.getElementById("hud-flip").textContent = round ? `${signed(flips, 0)} net test papers fixed vs round 0` : `seed 0 · ${blabel(B)} label${B === "1" ? "" : "s"} per area`;
+  document.querySelectorAll("#round-ticks span").forEach((s, i) => s.className = i === round ? "on" : "");
+}
+function setRound(r) {
+  const V = D.viz.budgets[B];
+  round = Math.max(0, Math.min(V.rounds.length - 1, r));
+  document.getElementById("round").value = round;
+  heroStats(); Graph.set(B, round); loopHighlight();
+}
+function play() {
+  if (playing) { clearInterval(playing); playing = null; return playIcon(false); }
+  const V = D.viz.budgets[B];
+  if (round >= V.rounds.length - 1) setRound(0);
+  playIcon(true);
+  playing = setInterval(() => {
+    if (round >= V.rounds.length - 1) { clearInterval(playing); playing = null; playIcon(false); return; }
+    setRound(round + 1);
+  }, 1500);
+}
+function playIcon(on) {
+  document.querySelector("#play svg").innerHTML = on ? '<rect x="2" y="1" width="2.4" height="8"></rect><rect x="5.6" y="1" width="2.4" height="8"></rect>' : '<path d="M2 1 L9 5 L2 9 Z"></path>';
+  document.getElementById("play").setAttribute("aria-label", on ? "Pause" : "Play the rounds");
+}
+
+/* ---------- loop diagram ---------- */
+const STEPS = [
+  ["Teacher", "ensemble + C&S", "Greedily pick, on validation, the subset of every model trained so far whose averaged prediction scores best, then propagate it with Correct & Smooth (which validation may also skip)."],
+  ["Calibrate", "temperature", "Fit one temperature on validation so the teacher's confidence means what it says. Pseudo-labels are ranked by this calibrated confidence."],
+  ["Select", "class-balanced top-k", "For each research area, take the k papers the teacher is most sure about, excluding labelled and validation papers. k grows by 50 per area every round."],
+  ["Students", "top-3 pre-trained", "Re-fine-tune the three pre-trained encoders with the best validation scores on the true labels plus the pseudo-labels, each pseudo-label weighted by its confidence."],
+  ["Pool", "grows every round", "Add the students to the pool. The next teacher is built from the whole pool, and validation keeps the best round's teacher."],
+];
+function loopSVG() {
+  const W = 420, H = 420, cx = 210, cy = 210, R = 150, s = svg(W, H, "Self-training loop");
+  el("circle", { cx, cy, r: R, style: "fill:none;stroke:var(--line-2);stroke-width:1.5;stroke-dasharray:3 6" }, s);
+  const path = el("path", { id: "orbit", d: `M ${cx} ${cy - R} A ${R} ${R} 0 1 1 ${cx - 0.01} ${cy - R}`, style: "fill:none;stroke:none" }, s);
+  if (!reduce) {
+    const dot = el("circle", { r: 5, style: "fill:var(--flare)" }, s);
+    const am = el("animateMotion", { dur: "7.5s", repeatCount: "indefinite", rotate: "auto" }, dot);
+    el("mpath", { href: "#orbit" }, am);
+    const glow = el("circle", { r: 12, style: "fill:var(--flare);opacity:0.18" }, s);
+    const am2 = el("animateMotion", { dur: "7.5s", repeatCount: "indefinite" }, glow);
+    el("mpath", { href: "#orbit" }, am2);
+  }
+  el("text", { x: cx, y: cy - 12, "text-anchor": "middle", style: "font:700 15px var(--f-display);fill:var(--text)" }, s, "validation");
+  el("text", { x: cx, y: cy + 8, "text-anchor": "middle", style: "font:500 11px var(--f-mono);fill:var(--text-3)" }, s, "decides when to stop");
+  el("text", { x: cx, y: cy + 34, "text-anchor": "middle", id: "loop-round", style: "font:600 12px var(--f-mono);fill:var(--flare)" }, s, "");
+  STEPS.forEach(([n, sub], i) => {
+    const a = -Math.PI / 2 + i * 2 * Math.PI / STEPS.length, x = cx + R * Math.cos(a), y = cy + R * Math.sin(a);
+    const g = el("g", { class: "stepnode", "data-i": i, tabindex: 0, role: "button", "aria-label": n }, s);
+    el("circle", { class: "ring", cx: x, cy: y, r: 44 }, g);
+    el("text", { x, y: y - 2, "text-anchor": "middle" }, g, n);
+    el("text", { x, y: y + 13, "text-anchor": "middle", class: "sub" }, g, sub);
+    g.addEventListener("click", () => selectStep(i));
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectStep(i); } });
+  });
+  document.getElementById("loop-svg").replaceChildren(s);
+  document.getElementById("steps").innerHTML = STEPS.map(([n, , d], i) => `<button class="step" type="button" data-i="${i}"><div><b>${esc(n)}</b><span>${esc(d)}</span></div></button>`).join("");
+  document.querySelectorAll(".step").forEach(b => b.onclick = () => selectStep(+b.dataset.i));
+  selectStep(0);
+}
+let stepSel = 0;
+function selectStep(i) {
+  stepSel = i;
+  document.querySelectorAll(".stepnode").forEach(g => g.classList.toggle("on", +g.dataset.i === i));
+  document.querySelectorAll(".step").forEach(b => b.classList.toggle("on", +b.dataset.i === i));
+}
+function loopHighlight() {
+  const t = document.getElementById("loop-round");
+  if (t && D) { const V = D.viz.budgets[B]; t.textContent = `round ${round} of ${V.rounds.length - 1}`; }
+}
+
+/* ---------- round charts ---------- */
+function accChart() {
+  const S = D.sest[B], PR = S.per_round, n = PR.length;
+  const vals = PR.flatMap(p => [p.val.mean - p.val.std, p.val.mean + p.val.std, p.test.mean - p.test.std, p.test.mean + p.test.std]);
+  const lo = Math.floor(Math.min(...vals) * 50) / 50, hi = Math.ceil(Math.max(...vals) * 50) / 50;
+  const W = 540, H = 280, Lm = 46, Rm = 18, T = 14, Bm = 40, s = svg(W, H, "Teacher accuracy by round");
+  const x = i => Lm + (n === 1 ? 0.5 : i / (n - 1)) * (W - Lm - Rm), y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - Bm);
+  for (const t of ticks(lo, hi, 5)) { el("line", { x1: Lm, x2: W - Rm, y1: y(t), y2: y(t), style: "stroke:var(--line)" }, s); el("text", { x: Lm - 8, y: y(t) + 4, "text-anchor": "end" }, s, Math.round(t * 1000) / 10 + "%"); }
+  PR.forEach((p, i) => el("text", { x: x(i), y: H - 20, "text-anchor": "middle", style: i === round ? "fill:var(--flare)" : "" }, s, `r${i}`));
+  el("text", { x: (Lm + W - Rm) / 2, y: H - 3, "text-anchor": "middle" }, s, "self-training round");
+  el("rect", { x: x(round) - 14, y: T, width: 28, height: H - T - Bm, rx: 6, style: "fill:var(--flare);opacity:0.08" }, s);
+  for (const [k, c] of [["val", "var(--cool)"], ["test", "var(--good)"]]) {
+    const up = PR.map((p, i) => `${x(i)},${y(p[k].mean + p[k].std)}`), dn = PR.map((p, i) => `${x(i)},${y(p[k].mean - p[k].std)}`).reverse();
+    el("polygon", { points: up.concat(dn).join(" "), style: `fill:${c};opacity:0.10` }, s);
+    el("polyline", { points: PR.map((p, i) => `${x(i)},${y(p[k].mean)}`).join(" "), style: `fill:none;stroke:${c};stroke-width:2.2` }, s);
+    PR.forEach((p, i) => el("circle", { cx: x(i), cy: y(p[k].mean), r: 4, style: `fill:${c};stroke:var(--panel);stroke-width:2`, "data-tip": `round ${i} · ${k}\n${ms(p[k])} %` }, s));
+  }
+  const counts = PR.map((_, i) => S.rounds_chosen.filter(r => r === i).length);
+  counts.forEach((c, i) => { for (let j = 0; j < c; j++) el("circle", { cx: x(i), cy: H - Bm - 6 - j * 9, r: 3.2, style: "fill:var(--flare)", "data-tip": `${c} of ${S.rounds_chosen.length} seeds stopped at round ${i}` }, s); });
+  document.getElementById("acc-chart").replaceChildren(s);
+}
+function plChart() {
+  const PR = D.sest[B].per_round.slice(1), n = PR.length;
+  const max = Math.max(...PR.map(p => p.n_pseudo)) || 1, W = 540, H = 280, Lm = 52, Rm = 18, T = 14, Bm = 40, s = svg(W, H, "Pseudo-labels per round");
+  const bw = (W - Lm - Rm) / n, y = v => T + (1 - v / max) * (H - T - Bm);
+  for (const t of ticks(0, max, 4)) { el("line", { x1: Lm, x2: W - Rm, y1: y(t), y2: y(t), style: "stroke:var(--line)" }, s); el("text", { x: Lm - 8, y: y(t) + 4, "text-anchor": "end" }, s, t.toLocaleString()); }
+  PR.forEach((p, i) => {
+    const x0 = Lm + i * bw + bw * 0.2, w = bw * 0.6, good = p.n_pseudo * p.pseudo_acc.mean;
+    el("rect", { x: x0, y: y(p.n_pseudo), width: w, height: y(0) - y(p.n_pseudo), rx: 3, style: "fill:var(--flare-dim)" }, s);
+    el("rect", { x: x0, y: y(good), width: w, height: y(0) - y(good), rx: 3, style: `fill:var(--flare);opacity:${i + 1 === round ? 1 : 0.8}`,
+      "data-tip": `round ${i + 1}\n${p.n_pseudo.toLocaleString()} pseudo-labels\n${ms(p.pseudo_acc)} % correct` }, s);
+    el("text", { x: x0 + w / 2, y: y(p.n_pseudo) - 6, "text-anchor": "middle", class: "strong" }, s, pct(p.pseudo_acc.mean) + "%");
+    el("text", { x: x0 + w / 2, y: H - 20, "text-anchor": "middle", style: i + 1 === round ? "fill:var(--flare)" : "" }, s, `r${i + 1}`);
+  });
+  el("text", { x: (Lm + W - Rm) / 2, y: H - 3, "text-anchor": "middle" }, s, "self-training round · label above bar = share correct");
+  document.getElementById("pl-chart").replaceChildren(s);
+}
+function multiples() {
+  const box = document.getElementById("multiples");
+  box.innerHTML = "";
+  for (const b of D.budgets) {
+    const PR = D.sest[b].per_round, n = PR.length, v = PR.map(p => p.test.mean);
+    const lo = Math.min(...v) - 0.005, hi = Math.max(...v) + 0.005, W = 160, H = 48;
+    const btn = document.createElement("button"); btn.type = "button"; btn.className = "mini" + (b === B ? " on" : "");
+    const gain = (D.posttrain[b][FINAL].mean - D.posttrain[b]["Pre-trained"].mean) * 100;
+    btn.innerHTML = `<div class="top"><span>${blabel(b)} label${b === "1" ? "" : "s"}/area</span><b>${signed(gain)} pts</b></div>`;
+    const s = svg(W, H, `${blabel(b)} labels per area`);
+    const pts = v.map((val, i) => [4 + i / (n - 1) * (W - 8), 4 + (1 - (val - lo) / (hi - lo)) * (H - 8)]);
+    el("polygon", { points: `4,${H} ` + pts.map(p => p.join(",")).join(" ") + ` ${W - 4},${H}`, style: "fill:var(--flare);opacity:0.10" }, s);
+    el("polyline", { points: pts.map(p => p.join(",")).join(" "), style: "fill:none;stroke:var(--flare);stroke-width:1.8" }, s);
+    const e = pts[pts.length - 1]; el("circle", { cx: e[0], cy: e[1], r: 2.8, style: "fill:var(--flare)" }, s);
+    btn.appendChild(s); btn.onclick = () => setBudget(b); box.appendChild(btn);
+  }
+}
+
+/* ---------- ladder ---------- */
+function ladder() {
+  const bs = D.budgets, W = 820, rh = 54, Lm = 120, Rm = 70, T = 12, H = T + bs.length * rh + 30, s = svg(W, H, "Accuracy ladder by budget");
+  const all = bs.flatMap(b => STAGE_SHOW.map(([k]) => D.posttrain[b][k].mean));
+  const lo = Math.floor(Math.min(...all) * 20) / 20, hi = Math.ceil(Math.max(...all) * 20) / 20, x = v => Lm + (v - lo) / (hi - lo) * (W - Lm - Rm);
+  for (const t of ticks(lo, hi, 6)) { el("line", { x1: x(t), x2: x(t), y1: T, y2: H - 24, style: "stroke:var(--line)" }, s); el("text", { x: x(t), y: H - 8, "text-anchor": "middle" }, s, Math.round(t * 100) + "%"); }
+  bs.forEach((b, i) => {
+    const yy = T + i * rh + rh / 2, P = D.posttrain[b], a = P.Scratch.mean, z = P[FINAL].mean, on = b === B;
+    if (on) el("rect", { x: 4, y: yy - rh / 2 + 3, width: W - 8, height: rh - 6, rx: 10, style: "fill:var(--flare);opacity:0.06" }, s);
+    const lab = el("text", { x: Lm - 14, y: yy + 4, "text-anchor": "end", class: "lbl", style: `cursor:pointer;${on ? "fill:var(--flare)" : ""}` }, s, `${blabel(b)} label${b === "1" ? "" : "s"}`);
+    lab.addEventListener("click", () => setBudget(b));
+    el("line", { x1: x(a), x2: x(z), y1: yy, y2: yy, style: "stroke:var(--line-2);stroke-width:6;stroke-linecap:round" }, s);
+    el("line", { x1: x(P["Pre-trained"].mean), x2: x(z), y1: yy, y2: yy, style: "stroke:var(--flare);stroke-width:2;opacity:0.6" }, s);
+    STAGE_SHOW.forEach(([k, n, c]) => el("circle", { cx: x(P[k].mean), cy: yy, r: k === FINAL ? 8 : 6, style: `fill:${c};stroke:var(--panel);stroke-width:2`, "data-tip": `${blabel(b)} labels/area · ${n}\n${ms(P[k])} %` }, s));
+    el("text", { x: x(z) + 14, y: yy + 4, class: "strong", style: "fill:var(--good)" }, s, signed((z - a) * 100));
+  });
+  document.getElementById("ladder").replaceChildren(s);
+  document.getElementById("ladder-legend").innerHTML = STAGE_SHOW.map(([, n, c]) => `<span><i class="dot" style="background:${c}"></i>${esc(n)}</span>`).join("") + `<span><i style="background:var(--good)"></i>number = total gain over scratch (pts)</span>`;
+}
+function stageTable() {
+  const stages = Object.keys(D.posttrain[D.budgets[0]]).filter(k => D.posttrain[D.budgets[0]][k] && D.posttrain[D.budgets[0]][k].mean !== undefined);
+  const head = ["Stage", ...D.budgets.map(b => `${blabel(b)} / area`)];
+  const rows = stages.map(st => `<tr><td>${esc(st)}</td>${D.budgets.map(b => { const top = Math.max(...stages.map(k => D.posttrain[b][k].mean)); return `<td class="${D.posttrain[b][st].mean === top ? "win" : ""}">${ms(D.posttrain[b][st])}</td>`; }).join("")}</tr>`).join("");
+  document.getElementById("stage-table").innerHTML = `<table><thead><tr>${head.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+/* ---------- reliability + distillation ---------- */
+function relChart() {
+  const C = D.calibration[B], W = 460, H = 330, Lm = 46, Rm = 14, T = 12, Bm = 40, s = svg(W, H, "Reliability diagram");
+  const x = v => Lm + v * (W - Lm - Rm), y = v => T + (1 - v) * (H - T - Bm);
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    el("line", { x1: Lm, x2: W - Rm, y1: y(t), y2: y(t), style: "stroke:var(--line)" }, s); el("text", { x: Lm - 8, y: y(t) + 4, "text-anchor": "end" }, s, t * 100 + "%");
+    el("text", { x: x(t), y: H - 22, "text-anchor": "middle" }, s, t * 100 + "%");
+  }
+  el("text", { x: (Lm + W - Rm) / 2, y: H - 4, "text-anchor": "middle" }, s, "confidence →  (y: accuracy)");
+  el("line", { x1: x(0), y1: y(0), x2: x(1), y2: y(1), style: "stroke:var(--text-3);stroke-dasharray:4 4" }, s);
+  for (const [bins, c, off] of [[C.bins_before, "var(--bad)", -4], [C.bins_after, "var(--good)", 4]]) {
+    const pts = [];
+    bins.forEach(([cs, cor, n], i) => {
+      if (!n) return;
+      const cf = cs / n, ac = cor / n; pts.push([x(cf), y(ac)]);
+      el("circle", { cx: x(cf), cy: y(ac), r: Math.min(10, 2.5 + Math.sqrt(n) / 6), style: `fill:${c};opacity:0.85`, "data-tip": `confidence ${pct(cf)}% · accuracy ${pct(ac)}%\n${n} test predictions (all seeds)` }, s);
+    });
+    el("polyline", { points: pts.map(p => p.join(",")).join(" "), style: `fill:none;stroke:${c};stroke-width:1.6;opacity:0.7` }, s);
+  }
+  document.getElementById("rel-chart").replaceChildren(s);
+  document.getElementById("rel-cap").textContent = `${blabel(B)} labels per area: expected calibration error ${pct(C.before.ece.mean)}% → ${pct(C.after.ece.mean)}%, test NLL ${C.before.nll.mean.toFixed(3)} → ${C.after.nll.mean.toFixed(3)} (T = ${C.temperature.mean.toFixed(2)}, fit on validation). Dot size shows how many predictions fall in the bin. Points on the dashed line mean a stated 80% really is right 80% of the time.`;
+}
+function distChart() {
+  const bs = D.budgets, K = [["mlp_scratch", "MLP on labels only", "var(--text-3)"], ["mlp_distilled", "MLP distilled from the teacher", "var(--flare)"], ["teacher", "Self-trained GNN teacher", "var(--good)"]];
+  const W = 460, gh = 54, Lm = 92, Rm = 44, T = 4, H = T + bs.length * gh + 28, s = svg(W, H, "Distillation");
+  const x = v => Lm + v * (W - Lm - Rm);
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) { el("line", { x1: x(t), x2: x(t), y1: T, y2: H - 22, style: "stroke:var(--line)" }, s); el("text", { x: x(t), y: H - 6, "text-anchor": "middle" }, s, t * 100 + "%"); }
+  bs.forEach((b, i) => {
+    const y0 = T + i * gh, on = b === B;
+    el("text", { x: Lm - 12, y: y0 + gh / 2 + 2, "text-anchor": "end", class: "lbl", style: on ? "fill:var(--flare)" : "" }, s, `${blabel(b)} / area`);
+    K.forEach(([k, n, c], j) => {
+      const v = D.distillation[b][k], yy = y0 + 5 + j * 14;
+      el("rect", { x: x(0), y: yy, width: x(v.mean) - x(0), height: 11, rx: 2, style: `fill:${c};opacity:${on ? 1 : 0.55}`, "data-tip": `${n}\n${ms(v)} %` }, s);
+      el("text", { x: x(v.mean) + 5, y: yy + 10, style: "font-size:10px" }, s, pct(v.mean));
+    });
+  });
+  const box = document.getElementById("dist-chart"); box.replaceChildren(s);
+  const lg = document.createElement("div"); lg.className = "legend";
+  lg.innerHTML = K.map(([, n, c]) => `<span><i style="background:${c};height:8px"></i>${n}</span>`).join(""); box.appendChild(lg);
+  const sp = D.inference_speed, d = D.distillation[B];
+  document.getElementById("dist-cap").textContent = `The student never sees an edge. Trained on the calibrated teacher's soft labels, it reaches ${pct(d.mlp_distilled.mean)}% at ${blabel(B)} labels per area, against ${pct(d.mlp_scratch.mean)}% from labels alone. A full-graph pass takes ${sp.mlp_ms.toFixed(1)} ms vs ${sp.gcn_ms.toFixed(1)} ms for the GCN on CPU, and it works for papers with no citations yet.`;
+}
+
+/* ---------- scroll story ---------- */
+let StoryGraph = null, storyObs = null;
+function testAcc(pred, ids) { const lab = D.viz.labels; return ids.reduce((s, i) => s + (pred[i] === lab[i]), 0) / Math.max(1, ids.length); }
+function perArea(pred) {
+  const lab = D.viz.labels, tot = new Array(7).fill(0), ok = new Array(7).fill(0);
+  for (const i of D.viz.test_idx) { tot[lab[i]]++; ok[lab[i]] += pred[i] === lab[i]; }
+  return tot.map((t, c) => t ? ok[c] / t : 0);
+}
+function story() {
+  const V = D.viz.budgets[B], tr0 = D.sest[B].traces[0], lab = D.viz.labels, T = D.viz.test_idx;
+  const box = document.getElementById("beats");
+  box.innerHTML = V.rounds.map((R, r) => {
+    const acc = testAcc(R.pred, T), val = tr0[r] ? tr0[r].val : null;
+    let body, facts;
+    if (r === 0) {
+      facts = [[`${pct(acc)}%`, "test accuracy"], [`${V.train.length}`, "labelled papers"], [val != null ? pct(val) + "%" : "—", "validation"], ["0", "pseudo-labels"]];
+      body = `The starting teacher: the validation-picked ensemble of fine-tuned models, propagated with Correct &amp; Smooth. Only the ringed papers have labels. Hollow dots are papers it currently gets wrong.`;
+    } else {
+      const P = V.rounds[r - 1].pred;
+      let fixed = 0, broke = 0; for (const i of T) { const a = P[i] === lab[i], b = R.pred[i] === lab[i]; if (!a && b) fixed++; if (a && !b) broke++; }
+      const prec = R.pseudo.reduce((s, i) => s + (R.pred[i] === lab[i]), 0) / Math.max(1, R.pseudo.length);
+      const before = perArea(P), after = perArea(R.pred), gains = after.map((v, c) => v - before[c]);
+      const best = gains.indexOf(Math.max(...gains));
+      facts = [[`${pct(acc)}%`, "test accuracy"], [R.pseudo.length.toLocaleString(), "pseudo-labels"], [`${pct(prec)}%`, "pseudo-labels correct"], [val != null ? pct(val) + "%" : "—", "validation"]];
+      body = `<span class="chip good">${fixed} test papers fixed</span> <span class="chip ${broke ? "bad" : ""}">${broke} broken</span><br>${gains[best] > 0 ? `Biggest gain: <b style="color:var(--k${best})">${esc(AREAS[best])}</b>, ${signed(gains[best] * 100)} pts.` : "No area improved this round."} ${r === V.chosen_round ? "<b style=\"color:var(--flare)\">Validation keeps this round's teacher.</b>" : ""}`;
+    }
+    return `<div class="beat" data-r="${r}"><div class="card"><div class="rk">r${r}${r === V.chosen_round ? "<span> ✓</span>" : ""}</div><div class="facts">${facts.map(([b, s]) => `<div><b>${b}</b><span>${s}</span></div>`).join("")}</div><p>${body}</p></div></div>`;
+  }).join("");
+  if (storyObs) storyObs.disconnect();
+  storyObs = new IntersectionObserver(es => {
+    for (const e of es) if (e.isIntersecting) {
+      const r = +e.target.dataset.r;
+      box.querySelectorAll(".beat").forEach(b => b.classList.toggle("on", b === e.target));
+      StoryGraph.set(B, r);
+    }
+  }, { rootMargin: "-45% 0px -45% 0px" });
+  box.querySelectorAll(".beat").forEach(b => storyObs.observe(b));
+  box.querySelector(".beat").classList.add("on");
+  StoryGraph.set(B, 0);
+}
+
+/* ---------- flows between rounds (seed 0, test papers) ---------- */
+function flows() {
+  const V = D.viz.budgets[B], lab = D.viz.labels, T = D.viz.test_idx, n = V.rounds.length;
+  const W = 540, H = 300, Lm = 30, Rm = 30, Tm = 26, Bm = 30, colW = 26, s = svg(W, H, "Test paper flows between rounds");
+  const xs = i => Lm + (n === 1 ? 0 : i / (n - 1)) * (W - Lm - Rm - colW), hh = H - Tm - Bm, sc = hh / T.length;
+  const right = V.rounds.map(R => T.reduce((a, i) => a + (R.pred[i] === lab[i]), 0));
+  for (let r = 0; r + 1 < n; r++) {
+    const P = V.rounds[r].pred, Q = V.rounds[r + 1].pred;
+    let rr = 0, rw = 0, wr = 0, ww = 0;
+    for (const i of T) { const a = P[i] === lab[i], b = Q[i] === lab[i]; if (a && b) rr++; else if (a) rw++; else if (b) wr++; else ww++; }
+    const x0 = xs(r) + colW, x1 = xs(r + 1), mx = (x0 + x1) / 2;
+    // left column: [right: rr then rw][wrong: wr then ww]; right column: [right: rr then wr][wrong: rw then ww]
+    const ribbon = (ya, yb, h, fill, op, tipTxt) => {
+      if (h <= 0) return;
+      el("path", { d: `M${x0},${ya} C${mx},${ya} ${mx},${yb} ${x1},${yb} L${x1},${yb + h} C${mx},${yb + h} ${mx},${ya + h} ${x0},${ya + h} Z`, style: `fill:${fill};opacity:${op}`, "data-tip": tipTxt }, s);
+    };
+    const L0 = Tm, R0 = Tm;
+    ribbon(L0, R0, rr * sc, "var(--good)", 0.16, `r${r}→r${r + 1}: ${rr} stayed right`);
+    ribbon(L0 + rr * sc, R0 + (rr + wr) * sc, rw * sc, "var(--bad)", 0.85, `r${r}→r${r + 1}: ${rw} broken (right → wrong)`);
+    ribbon(L0 + (rr + rw) * sc, R0 + rr * sc, wr * sc, "#ffffff", 0.85, `r${r}→r${r + 1}: ${wr} fixed (wrong → right)`);
+    ribbon(L0 + (rr + rw + wr) * sc, R0 + (rr + wr + rw) * sc, ww * sc, "var(--bad)", 0.12, `r${r}→r${r + 1}: ${ww} stayed wrong`);
+  }
+  V.rounds.forEach((R, r) => {
+    const x = xs(r), g = right[r] * sc;
+    el("rect", { x, y: Tm, width: colW, height: g, rx: 3, style: "fill:var(--good)", "data-tip": `round ${r}: ${right[r]} of ${T.length} test papers right (${pct(right[r] / T.length)}%)` }, s);
+    el("rect", { x, y: Tm + g, width: colW, height: hh - g, rx: 3, style: "fill:var(--bad);opacity:0.75" }, s);
+    el("text", { x: x + colW / 2, y: Tm - 8, "text-anchor": "middle", class: "strong", style: "font-size:10px" }, s, pct(right[r] / T.length));
+    el("text", { x: x + colW / 2, y: H - 10, "text-anchor": "middle", style: r === V.chosen_round ? "fill:var(--flare)" : "" }, s, `r${r}${r === V.chosen_round ? "✓" : ""}`);
+  });
+  document.getElementById("flow-chart").replaceChildren(s);
+}
+
+/* ---------- per-area heatmap ---------- */
+function heat() {
+  const V = D.viz.budgets[B], n = V.rounds.length, rows = V.rounds.map(R => perArea(R.pred));
+  const lo = Math.min(...rows.flat()), hi = Math.max(...rows.flat());
+  const color = v => { const t = hi > lo ? (v - lo) / (hi - lo) : 1, a = hexRgb("#ff6b7d"), m = hexRgb("#ffb547"), b = hexRgb("#44e0a0"); const [p, q, u] = t < 0.5 ? [a, m, t * 2] : [m, b, (t - 0.5) * 2]; return `rgb(${p.map((c, i) => Math.round(c + (q[i] - c) * u)).join(",")})`; };
+  const box = document.getElementById("heat"); box.style.setProperty("--cols", n);
+  box.innerHTML = `<div class="row hdr"><span></span>${V.rounds.map((_, r) => `<span>r${r}</span>`).join("")}</div>` +
+    AREAS.map((a, c) => `<div class="row"><span><i style="width:8px;height:8px;border-radius:50%;flex:none;background:var(--k${c})"></i>${esc(a)}</span>${rows.map((row, r) => `<span class="cell${r === V.chosen_round ? " on" : ""}" style="background:${color(row[c])}" data-tip="${esc(`${a} · round ${r}
+${pct(row[c])}% of its test papers right`)}">${Math.round(row[c] * 100)}</span>`).join("")}</div>`).join("");
+}
+
+/* ---------- count-up ---------- */
+function countUp(elm, to, fmtFn) {
+  const fromV = +(elm.dataset.v || 0); elm.dataset.v = to;
+  if (reduce) { elm.innerHTML = fmtFn(to); return; }
+  const t0 = performance.now(), d = 900;
+  const step = now => { const k = Math.min(1, (now - t0) / d), e = 1 - Math.pow(1 - k, 3); elm.innerHTML = fmtFn(fromV + (to - fromV) * e); if (k < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
+
+/* ---------- budget switch ---------- */
+function setBudget(b) {
+  B = b;
+  document.querySelectorAll("#bseg button").forEach(t => t.setAttribute("aria-pressed", t.dataset.b === b));
+  const V = D.viz.budgets[B], sl = document.getElementById("round");
+  sl.max = V.rounds.length - 1;
+  document.getElementById("round-ticks").innerHTML = V.rounds.map((_, i) => `<span>r${i}${i === V.chosen_round ? "✓" : ""}</span>`).join("");
+  const P = D.posttrain[B], gain = (P[FINAL].mean - P["Pre-trained"].mean) * 100;
+  countUp(document.getElementById("gain"), gain, v => `${signed(v)}<small>pts</small>`);
+  document.getElementById("gain-cap").textContent = `added by post-training on top of the fine-tuned pre-trained model, with ${blabel(B)} labelled paper${B === "1" ? "" : "s"} per area (${pct(P["Pre-trained"].mean)}% → ${pct(P[FINAL].mean)}% test accuracy, mean of ${D.config.seeds} seeds).`;
+  const lo = 0.3, hi = 0.9;
+  document.getElementById("ladder-mini").innerHTML = STAGE_SHOW.map(([k, n, c]) => `<div><span>${esc(n.replace("Ensemble + Correct & Smooth", "Ensemble + C&S").replace("Self-ensembling self-training", "Self-trained"))}</span><span class="bar"><span style="width:${Math.max(0, Math.min(1, (P[k].mean - lo) / (hi - lo))) * 100}%;background:${c}"></span></span><b>${pct(P[k].mean)}</b></div>`).join("");
+  if (playing) { clearInterval(playing); playing = null; playIcon(false); }
+  round = 0; setRound(V.chosen_round > 0 && reduce ? V.chosen_round : 0);
+  accChart(); plChart(); multiples(); ladder(); relChart(); distChart(); story(); flows(); heat();
+  if (!reduce && !setBudget.started) { setBudget.started = true; setTimeout(play, 900); }
+}
+
+function render() {
+  if (D.config.quick) {
+    const n = document.createElement("p"); n.className = "banner";
+    n.textContent = `Preliminary data: ${D.config.seeds}-seed smoke test with shortened training. These are not the final results.`;
+    document.querySelector("main .inner").prepend(n);
+  }
+  document.getElementById("bseg").innerHTML = D.budgets.map(b => `<button type="button" data-b="${b}">${blabel(b)}</button>`).join("");
+  document.querySelectorAll("#bseg button").forEach(t => t.onclick = () => setBudget(t.dataset.b));
+  document.getElementById("round").oninput = e => { if (playing) { clearInterval(playing); playing = null; playIcon(false); } setRound(+e.target.value); };
+  document.getElementById("play").onclick = play;
+  document.getElementById("key").innerHTML = [
+    [`<circle cx="7" cy="7" r="4.5" fill="var(--k2)"></circle>`, "predicted area, correct"],
+    [`<circle cx="7" cy="7" r="4" fill="none" stroke="var(--k2)" stroke-width="1.5"></circle>`, "predicted area, wrong"],
+    [`<circle cx="7" cy="7" r="5" fill="var(--k2)" stroke="#fff" stroke-width="2"></circle>`, "labelled paper"],
+    [`<circle cx="7" cy="7" r="7" fill="rgba(255,181,71,.3)"></circle><circle cx="7" cy="7" r="3.5" fill="var(--k2)"></circle>`, "pseudo-labelled this round"],
+  ].map(([g, t]) => `<span><svg viewBox="0 0 14 14">${g}</svg>${t}</span>`).join("") +
+    AREAS.map((a, i) => `<span><i style="width:9px;height:9px;border-radius:50%;display:inline-block;background:var(--k${i})"></i>${esc(a)}</span>`).join("");
+  Graph = makeGraph(document.getElementById("graph"));
+  StoryGraph = makeGraph(document.getElementById("story-graph"));
+  loopSVG(); stageTable();
+  document.getElementById("meta").textContent = `${D.config.seeds} seeds · budgets ${D.budgets.map(blabel).join(" / ")} labels per area · up to ${D.config.sest_rounds} self-training rounds with ${D.config.sest_students} students · the graph shows the 712-paper citation subgraph, coloured by the seed-0 teacher.`;
+  setBudget(D.budgets[0]);
+}
+
+Promise.all([fetch("cora_layout.json").then(r => r.json()), fetch("pretrain_posttrain.json").then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })])
+  .then(([layout, data]) => {
+    L = layout; D = data;
+    if (!D.sest || !D.viz) throw new Error("this results file predates self-ensembling self-training; rerun pretrain_posttrain.py");
+    render();
+  })
+  .catch(e => { document.getElementById("status").textContent = `Could not load results (${e.message}).`; });
+</script>
