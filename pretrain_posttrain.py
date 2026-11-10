@@ -278,7 +278,7 @@ PRETRAINERS = {
     "DGI": (pretrain_dgi, False),
     "GRACE": (pretrain_grace, False),
     "BGRL": (pretrain_bgrl, True),
-    "GraphMAE": (pretrain_graphmae, False),
+    "GraphMAE": (pretrain_graphmae, True),  # BatchNorm prevents embedding-scale collapse
     "GAE": (pretrain_gae, False),
 }
 
@@ -562,8 +562,30 @@ def load_data():
     return _DATA
 
 
+def _cache_path(a, seed, pcfg, budgets):
+    import hashlib
+    key = json.dumps({"seed": seed, "pcfg": pcfg, "budgets": [str(b) for b in budgets],
+                      "hidden": a.hidden, "out": a.out, "ft_epochs": a.ft_epochs,
+                      "patience": a.patience, "enc_lrs": a.enc_lrs,
+                      "norms": {m: PRETRAINERS[m][1] for m in METHODS}}, sort_keys=True)
+    return os.path.join(a.cache_dir, f"seed{seed}_{hashlib.sha1(key.encode()).hexdigest()[:12]}.pt")
+
+
 def seed_pretrain_finetune(seed, a, pcfg, budgets):
-    """Phase 1 + 2 for one seed: pre-train every method, probe it, fine-tune every init."""
+    """Phase 1 + 2 for one seed (cached on disk so an interrupted run can resume)."""
+    path = _cache_path(a, seed, pcfg, budgets)
+    if a.cache_dir and os.path.exists(path):
+        print(f"  [cache] seed {seed}: reusing {path}", flush=True)
+        return torch.load(path, weights_only=False)
+    out = _seed_pretrain_finetune(seed, a, pcfg, budgets)
+    if a.cache_dir:
+        os.makedirs(a.cache_dir, exist_ok=True)
+        torch.save(out, path + ".tmp")
+        os.replace(path + ".tmp", path)
+    return out
+
+
+def _seed_pretrain_finetune(seed, a, pcfg, budgets):
     torch.set_num_threads(a.threads_per_worker)
     data = load_data()
     y_np = data.y.numpy()
@@ -677,8 +699,10 @@ def main():
     ap.add_argument("--st-rounds", type=int, default=3)
     ap.add_argument("--st-per-class", type=int, default=40)
     ap.add_argument("--st-threshold", type=float, default=0.7)
-    ap.add_argument("--workers", type=int, default=min(os.cpu_count() or 1, 5),
-                    help="parallel seed workers")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="parallel seed workers (default: one per seed)")
+    ap.add_argument("--cache-dir", default="checkpoints/pretrain_posttrain",
+                    help="per-seed cache for resuming; '' disables")
     ap.add_argument("--quick", action="store_true", help="tiny smoke-test run")
     ap.add_argument("--out-prefix", default="docs/pretrain_posttrain")
     a = ap.parse_args()
@@ -686,7 +710,7 @@ def main():
         a.seeds, a.budgets, a.ft_epochs, a.patience = 2, "3,public", 40, 20
         a.pretrain_scale, a.st_rounds = 0.05, 1
     a.enc_lrs = [float(x) for x in str(a.enc_lrs).split(",")]
-    a.workers = max(1, min(a.workers, a.seeds))
+    a.workers = max(1, min(a.workers or a.seeds, a.seeds))
     a.threads_per_worker = max(1, (os.cpu_count() or 1) // a.workers)
     budgets = [b if b == "public" else int(b) for b in a.budgets.split(",")]
     torch.set_num_threads(os.cpu_count() or 1)
