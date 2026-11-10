@@ -824,7 +824,7 @@ def main():
     ap.add_argument("--st-rounds", type=int, default=3)
     ap.add_argument("--st-per-class", type=int, default=40)
     ap.add_argument("--st-threshold", type=float, default=0.7)
-    ap.add_argument("--sest-rounds", type=int, default=4, help="self-ensembling self-training rounds")
+    ap.add_argument("--sest-rounds", type=int, default=6, help="self-ensembling self-training rounds")
     ap.add_argument("--sest-students", type=int, default=3, help="pre-trained inits used as students")
     ap.add_argument("--sest-per-class", type=int, default=50, help="pseudo-labels per class added per round")
     ap.add_argument("--sest-lambda", type=float, default=1.0, help="weight of the pseudo-label loss")
