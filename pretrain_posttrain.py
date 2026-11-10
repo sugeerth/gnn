@@ -338,9 +338,13 @@ class Classifier(nn.Module):
         return self.head(F.dropout(self.enc(x, ei), self.drop, self.training))
 
 
-def finetune(init_state, norm, data, train_idx, train_y, seed, enc_lr, a):
+def finetune(init_state, norm, data, train_idx, train_y, seed, enc_lr, a, pseudo=None, lam=1.0,
+             consistency=0.0, sharpen_t=0.5):
     """Supervised training of encoder + linear head. Model selection on val acc
-    (ties broken by val loss). Returns full-graph log-probs of the best epoch."""
+    (ties broken by val loss). Returns full-graph log-probs of the best epoch.
+    pseudo=(idx, labels, weights) adds lam * confidence-weighted CE on pseudo-labels.
+    consistency > 0 adds a GRAND-style loss: two dropout passes must agree with their
+    sharpened average on every node (no labels used)."""
     set_seed(seed)
     enc = Encoder(data.num_features, a.hidden, a.out, norm=norm)
     if init_state is not None:
@@ -357,7 +361,19 @@ def finetune(init_state, norm, data, train_idx, train_y, seed, enc_lr, a):
         model.train()
         opt.zero_grad()
         out = model(data.x, data.edge_index)
-        F.cross_entropy(out[train_idx], train_y).backward()
+        loss = F.cross_entropy(out[train_idx], train_y)
+        if pseudo is not None and pseudo[0].numel():
+            p_idx, p_y, p_w = pseudo
+            ce = F.cross_entropy(out[p_idx], p_y, reduction="none")
+            loss = loss + lam * (p_w * ce).sum() / p_w.sum()
+        if consistency > 0:
+            p1 = F.softmax(out, 1)
+            p2 = F.softmax(model(data.x, data.edge_index), 1)
+            avg = (p1 + p2) / 2
+            sharp = avg.pow(1 / sharpen_t)
+            sharp = (sharp / sharp.sum(1, keepdim=True)).detach()
+            loss = loss + consistency * ((p1 - sharp).pow(2).sum(1).mean() + (p2 - sharp).pow(2).sum(1).mean()) / 2
+        loss.backward()
         opt.step()
         model.eval()
         with torch.no_grad():
@@ -470,6 +486,66 @@ def greedy_ensemble(prob_list, names, data, max_size=12):
         total = total + prob_list[cand]
         best = new
     return total / len(picked), [names[i] for i in picked]
+
+
+def calibrated(probs, data):
+    """Temperature-scale probabilities on validation NLL (grid search)."""
+    logp, _ = temperature_scale(probs.clamp_min(1e-9).log(), data)
+    return logp.exp()
+
+
+def select_pseudo(probs, data, train_idx, per_class, threshold=0.0):
+    """Class-balanced pseudo-labels: the per_class most confident predictions of each
+    class among nodes that are neither labelled nor validation."""
+    excluded = torch.zeros(data.num_nodes, dtype=torch.bool)
+    excluded[train_idx] = True
+    excluded[data.val_idx] = True
+    conf, pred = probs.max(1)
+    picked = []
+    for c in range(len(CLASS_NAMES)):
+        cand = ((pred == c) & ~excluded & (conf >= threshold)).nonzero().view(-1)
+        picked.append(cand[conf[cand].argsort(descending=True)[:per_class]])
+    idx = torch.cat(picked)
+    return idx, pred[idx], conf[idx]
+
+
+def teacher_from_pool(pool, names, data, train_idx):
+    """Val-greedy ensemble of the pool, then validation-gated Correct&Smooth."""
+    ens, members = greedy_ensemble(pool, names, data)
+    out, va, alphas = correct_and_smooth(ens.clamp_min(1e-9).log(), data, train_idx)
+    return out, va, members, alphas
+
+
+def self_ensembling_self_training(states, norms, data, train_idx, seed, ft_seed_b, student_inits, a):
+    """Iterative post-training. Each round:
+      teacher  = C&S(val-greedy ensemble of every model so far), temperature-calibrated
+      pseudo   = class-balanced top-k nodes by calibrated teacher confidence (k grows per round)
+      students = re-fine-tune each student init on labels + confidence-weighted pseudo-labels
+      pool    += students
+    The round whose teacher has the best validation accuracy is returned."""
+    y = data.y
+    pool = [ft_seed_b[i]["logp"].exp() for i in INITS]
+    names = list(INITS)
+    teacher, t_val, members, alphas = teacher_from_pool(pool, names, data, train_idx)
+    best = {"probs": teacher, "val": t_val, "round": 0, "members": members}
+    trace = [{"round": 0, "val": t_val, "n_pseudo": 0, "pseudo_acc": None, "members": members}]
+    for r in range(1, a.sest_rounds + 1):
+        cal = calibrated(teacher, data)
+        p_idx, p_y, p_w = select_pseudo(cal, data, train_idx, a.sest_per_class * r)
+        for init in student_inits:
+            st = states.get(init)
+            lr = ft_seed_b[init]["lr"]
+            logp, _ = finetune(st, norms[init], data, train_idx, y[train_idx], seed + 100 * r, lr, a,
+                               pseudo=(p_idx, p_y, p_w), lam=a.sest_lambda,
+                               consistency=getattr(a, "sest_consistency", 0.0))
+            pool.append(logp.exp())
+            names.append(f"{init}@r{r}")
+        teacher, t_val, members, alphas = teacher_from_pool(pool, names, data, train_idx)
+        trace.append({"round": r, "val": t_val, "n_pseudo": int(p_idx.numel()),
+                      "pseudo_acc": float((p_y == y[p_idx]).float().mean()), "members": members})
+        if t_val > best["val"]:
+            best = {"probs": teacher, "val": t_val, "round": r, "members": members}
+    return best, trace
 
 
 def ece(probs, y, n_bins=15):
@@ -716,6 +792,11 @@ def main():
     ap.add_argument("--st-rounds", type=int, default=3)
     ap.add_argument("--st-per-class", type=int, default=40)
     ap.add_argument("--st-threshold", type=float, default=0.7)
+    ap.add_argument("--sest-rounds", type=int, default=4, help="self-ensembling self-training rounds")
+    ap.add_argument("--sest-per-class", type=int, default=50, help="pseudo-labels per class added per round")
+    ap.add_argument("--sest-lambda", type=float, default=1.0, help="weight of the pseudo-label loss")
+    ap.add_argument("--sest-consistency", type=float, default=0.0,
+                    help="weight of the dropout-consistency loss in students")
     ap.add_argument("--workers", type=int, default=0,
                     help="parallel seed workers (default: one per seed)")
     ap.add_argument("--cache-dir", default="checkpoints/pretrain_posttrain",
