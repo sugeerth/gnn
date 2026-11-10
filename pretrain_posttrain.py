@@ -751,6 +751,15 @@ def seed_posttrain(seed, a, budgets, best_init, states, ft_seed):
     res = {}
     for b in budgets:
         bk = str(b)
+        cpath = None
+        if a.cache_dir:
+            import hashlib
+            key = json.dumps({k: getattr(a, k) for k in sorted(vars(a)) if k.startswith(("sest", "st_", "ft_", "patience", "hidden", "out", "enc_lrs"))}, sort_keys=True, default=str)
+            cpath = os.path.join(a.cache_dir, f"post_seed{seed}_b{bk}_{best_init}_{hashlib.sha1(key.encode()).hexdigest()[:10]}.pt")
+            if os.path.exists(cpath):
+                res[bk] = torch.load(cpath, weights_only=False)
+                print(f"  [cache] post-train seed {seed} budget {bk}", flush=True)
+                continue
         tr = make_split(data, b, seed)
         base = ft_seed[bk][best_init]
         r = {"Scratch": ft_seed[bk]["Scratch"]["test"], "Pre-trained": base["test"]}
@@ -795,6 +804,10 @@ def seed_posttrain(seed, a, budgets, best_init, states, ft_seed):
               f"pre {r['Pre-trained']:.3f} -> ens+C&S {r['Ensemble + C&S']:.3f} -> "
               f"SEST(r={sest['round']}) {r['Self-ensembling self-training']:.3f} | "
               f"MLP {d['mlp_scratch']:.3f} -> distilled {d['mlp_distilled']:.3f}", flush=True)
+        if cpath:
+            os.makedirs(a.cache_dir, exist_ok=True)
+            torch.save(res[bk], cpath + ".tmp")
+            os.replace(cpath + ".tmp", cpath)
     return res
 
 
